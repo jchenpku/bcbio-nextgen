@@ -4,25 +4,18 @@ http://tophat.cbcb.umd.edu
 """
 import os
 import shutil
-import sys
 import glob
 import subprocess
 
 import numpy
 import pysam
 
-try:
-    import sh
-except ImportError:
-    sh = None
-
 from bcbio.pipeline import config_utils
 from bcbio.ngsalign import bowtie, bowtie2
 from bcbio.utils import safe_makedir, file_exists, get_in, symlink_plus
 from bcbio.distributed.transaction import file_transaction
 from bcbio.provenance import do
-from bcbio import bam
-from bcbio import broad
+from bcbio import bam, broad, utils
 import bcbio.pipeline.datadict as dd
 
 
@@ -38,7 +31,7 @@ def _set_transcriptome_option(options, data, ref_file):
     # prefer transcriptome-index vs a GTF file if available
     transcriptome_index = get_in(data, ("genome_resources", "rnaseq",
                                         "transcriptome_index", "tophat"))
-    fusion_mode = get_in(data, ("config", "algorithm", "fusion_mode"), False)
+    fusion_mode = _should_run_fusion(data)
     if transcriptome_index and file_exists(transcriptome_index) and not fusion_mode:
         options["transcriptome-index"] = os.path.splitext(transcriptome_index)[0]
         return options
@@ -77,9 +70,8 @@ def _set_stranded_flag(options, config):
     options["library-type"] = flag
     return options
 
-def _set_fusion_mode(options, config):
-    fusion_mode = get_in(config, ("algorithm", "fusion_mode"), False)
-    if fusion_mode:
+def _set_fusion_mode(options, data):
+    if _should_run_fusion(data):
         options["fusion-search"] = True
     return options
 
@@ -90,14 +82,14 @@ def tophat_align(fastq_file, pair_file, ref_file, out_base, align_dir, data,
     """
     config = data["config"]
     options = get_in(config, ("resources", "tophat", "options"), {})
-    options = _set_fusion_mode(options, config)
+    options = _set_fusion_mode(options, data)
     options = _set_quality_flag(options, data)
     options = _set_transcriptome_option(options, data, ref_file)
     options = _set_cores(options, config)
     options = _set_rg_options(options, names)
     options = _set_stranded_flag(options, config)
 
-    ref_file, runner = _determine_aligner_and_reference(ref_file, config)
+    ref_file, runner = _determine_aligner_and_reference(ref_file, data)
 
     # fusion search does not work properly with Bowtie2
     if options.get("fusion-search", False):
@@ -132,16 +124,16 @@ def tophat_align(fastq_file, pair_file, ref_file, out_base, align_dir, data,
             options["output-dir"] = tx_out_dir
             options["no-coverage-search"] = True
             options["no-mixed"] = True
-            tophat_runner = sh.Command(config_utils.get_program("tophat",
-                                                                config))
-            ready_options = {}
-            for k, v in options.iteritems():
-                ready_options[k.replace("-", "_")] = v
-            # tophat requires options before arguments,
-            # otherwise it silently ignores them
-            tophat_ready = tophat_runner.bake(**ready_options)
-            cmd = "%s %s" % (sys.executable, str(tophat_ready.bake(*files)))
-            do.run(cmd, "Running Tophat on %s and %s." % (fastq_file, pair_file), None)
+            cmd = [utils.get_program_python("tophat"), config_utils.get_program("tophat", config)]
+            for k, v in options.items():
+                if v is True:
+                    cmd.append("--%s" % k)
+                else:
+                    assert not isinstance(v, bool)
+                    cmd.append("--%s=%s" % (k, v))
+            # tophat requires options before arguments, otherwise it silently ignores them
+            cmd += files
+            do.run(cmd, "Running Tophat on %s and %s." % (fastq_file, pair_file))
     if pair_file and _has_alignments(out_file):
         fixed = _fix_mates(out_file, os.path.join(out_dir, "%s-align.bam" % out_base),
                            ref_file, config)
@@ -168,11 +160,14 @@ def merge_unmapped(bam_file, unmapped_bam, config):
 
 def _has_alignments(sam_file):
     with open(sam_file) as in_handle:
-        for line in in_handle:
-            if line.startswith("File removed to save disk space"):
-                return False
-            elif not line.startswith("@"):
-                return True
+        try:
+            for line in in_handle:
+                if line.startswith("File removed to save disk space"):
+                    return False
+                elif not line.startswith("@"):
+                    return True
+        except UnicodeDecodeError:
+            return not bam.is_empty(sam_file)
     return False
 
 def _fix_mates(orig_file, out_file, ref_file, config):
@@ -197,6 +192,7 @@ def _add_rg(unmapped_file, config, names):
     rg_fixed = picard.run_fn("picard_fix_rgs", unmapped_file, names)
     return rg_fixed
 
+
 def _fix_unmapped(mapped_file, unmapped_file, data):
     """
     The unmapped.bam file up until at least Tophat 2.1.1 is broken in various
@@ -211,13 +207,18 @@ def _fix_unmapped(mapped_file, unmapped_file, data):
 
     cmd = config_utils.get_program("tophat-recondition", data)
     cmd += " -q"
-    cmd += " -m %s" % mapped_file
-    cmd += " -u %s" % unmapped_file
-    cmd += " %s" % os.path.dirname(mapped_file)
+    tophat_out_dir = os.path.dirname(mapped_file)
+    tophat_logfile = os.path.join(tophat_out_dir, 'tophat-recondition.log')
 
-    do.run(cmd, "Fixing unmapped reads with Tophat-Recondition.", None)
+    with file_transaction(data, tophat_logfile) as tx_logfile:
+        cmd += ' --logfile %s' % tx_logfile
+        cmd += " -m %s" % mapped_file
+        cmd += " -u %s" % unmapped_file
+        cmd += " %s" % tophat_out_dir
+        do.run(cmd, "Fixing unmapped reads with Tophat-Recondition.", None)
 
     return out_file
+
 
 def align(fastq_file, pair_file, ref_file, names, align_dir, data,):
     out_files = tophat_align(fastq_file, pair_file, ref_file, names["lane"],
@@ -249,7 +250,7 @@ def _bowtie_for_innerdist(start, fastq_file, pair_file, ref_file, out_base,
         shutil.rmtree(work_dir)
     safe_makedir(work_dir)
     extra_args = ["-s", str(start), "-u", "250000"]
-    ref_file, bowtie_runner = _determine_aligner_and_reference(ref_file, data["config"])
+    ref_file, bowtie_runner = _determine_aligner_and_reference(ref_file, data)
     out_sam = bowtie_runner.align(fastq_file, pair_file, ref_file, {"lane": out_base},
                                   work_dir, data, extra_args)
     dists = []
@@ -296,15 +297,19 @@ def _bowtie_major_version(stdout):
         major_version = 1
     return major_version
 
-def _determine_aligner_and_reference(ref_file, config):
-    fusion_mode = get_in(config, ("algorithm", "fusion_mode"), False)
+
+def _should_run_fusion(data):
+    return dd.get_fusion_caller(data)
+
+def _determine_aligner_and_reference(ref_file, data):
+    fusion_mode = _should_run_fusion(data)
     # fusion_mode only works with bowtie1
     if fusion_mode:
-        return _get_bowtie_with_reference(config, ref_file, 1)
+        return _get_bowtie_with_reference(ref_file, 1)
     else:
-        return _get_bowtie_with_reference(config, ref_file, 2)
+        return _get_bowtie_with_reference(ref_file, 2)
 
-def _get_bowtie_with_reference(config, ref_file, version):
+def _get_bowtie_with_reference(ref_file, version):
     if version == 1:
         ref_file = ref_file.replace("/bowtie2/", "/bowtie/")
         return ref_file, bowtie
@@ -314,8 +319,11 @@ def _get_bowtie_with_reference(config, ref_file, version):
 
 
 def _tophat_major_version(config):
-    cmd =  [sys.executable, config_utils.get_program("tophat", config, default="tophat"),
-            "--version"]
+    cmd =  [
+        utils.get_program_python("tophat"),
+        config_utils.get_program("tophat", config, default="tophat"),
+        "--version"
+    ]
 
     # tophat --version returns strings like this: Tophat v2.0.4
     version_string = str(subprocess.check_output(cmd)).strip().split()[1]

@@ -13,6 +13,7 @@ except ImportError:
 
 from bcbio import bam, utils
 from bcbio.distributed.transaction import tx_tmpdir
+from bcbio.log import logger
 from bcbio.provenance import do
 from bcbio.pipeline import datadict as dd
 from bcbio.pipeline import config_utils
@@ -30,10 +31,11 @@ def run(bam_file, data, fastqc_out):
     if not os.path.exists(sentry_file):
         work_dir = os.path.dirname(fastqc_out)
         utils.safe_makedir(work_dir)
-        ds_bam = (bam.downsample(bam_file, data, 1e7, work_dir=work_dir)
-                  if data.get("analysis", "").lower() not in ["standard", "smallrna-seq"]
-                  else None)
-        bam_file = ds_bam if ds_bam else bam_file
+        ds_file = (bam.downsample(bam_file, data, 1e7, work_dir=work_dir)
+                   if data.get("analysis", "").lower() not in ["standard", "smallrna-seq"]
+                   else None)
+        if ds_file is not None:
+            bam_file = ds_file
         frmt = "bam" if bam_file.endswith("bam") else "fastq"
         fastqc_name = utils.splitext_plus(os.path.basename(bam_file))[0]
         fastqc_clean_name = dd.get_sample_name(data)
@@ -43,7 +45,8 @@ def run(bam_file, data, fastqc_out):
                 cl = [config_utils.get_program("fastqc", data["config"]),
                       "-d", tx_tmp_dir,
                       "-t", str(num_cores), "--extract", "-o", tx_tmp_dir, "-f", frmt, bam_file]
-                cl = "%s %s" % (utils.local_path_export(), " ".join([str(x) for x in cl]))
+                cl = "%s %s %s" % (utils.java_freetype_fix(),
+                                   utils.local_path_export(), " ".join([str(x) for x in cl]))
                 do.run(cl, "FastQC: %s" % dd.get_sample_name(data))
                 tx_fastqc_out = os.path.join(tx_tmp_dir, "%s_fastqc" % fastqc_name)
                 tx_combo_file = os.path.join(tx_tmp_dir, "%s_fastqc.html" % fastqc_name)
@@ -59,7 +62,8 @@ def run(bam_file, data, fastqc_out):
                     if os.path.exists("%s.zip" % tx_fastqc_out):
                         shutil.move("%s.zip" % tx_fastqc_out, os.path.join(fastqc_out, "%s.zip" % fastqc_clean_name))
                 elif not os.path.exists(sentry_file):
-                    raise ValueError("FastQC failed to produce output HTML file: %s" % os.path.listdir(tx_tmp_dir))
+                    raise ValueError("FastQC failed to produce output HTML file: %s" % os.listdir(tx_tmp_dir))
+    logger.info("Produced HTML report %s" % sentry_file)
     parser = FastQCParser(fastqc_out, dd.get_sample_name(data))
     stats = parser.get_fastqc_summary()
     parser.save_sections_into_file()

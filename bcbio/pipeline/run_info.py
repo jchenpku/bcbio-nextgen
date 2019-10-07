@@ -8,13 +8,15 @@ from contextlib import closing
 import copy
 import glob
 import itertools
+import operator
 import os
 import string
 
+import six
 import toolz as tz
 import yaml
-from bcbio import install, utils
-from bcbio.bam import ref
+from bcbio import install, utils, structural
+from bcbio.bam import fastq, ref
 from bcbio.log import logger
 from bcbio.distributed import objectstore
 from bcbio.illumina import flowcell
@@ -22,15 +24,26 @@ from bcbio.pipeline import alignment, config_utils, genome
 from bcbio.pipeline import datadict as dd
 from bcbio.provenance import diagnostics, programs, versioncheck
 from bcbio.provenance import data as provenancedata
-from bcbio.variation import annotation, effects, genotype, population, joint, vcfutils
+from bcbio.qc import viral
+
+from bcbio.variation import annotation, effects, genotype, population, joint, vcfutils, vcfanno
 from bcbio.variation.cortex import get_sample_name
 from bcbio.bam.fastq import open_fastq
+from functools import reduce
 
 ALLOWED_CONTIG_NAME_CHARS = set(list(string.digits) + list(string.ascii_letters) + ["-", "_", "*", ":", "."])
 ALGORITHM_NOPATH_KEYS = ["variantcaller", "realign", "recalibrate", "peakcaller",
-                         "phasing", "svcaller", "hetcaller", "jointcaller", "tools_off", "mixup_check"]
+                         "expression_caller", "singlecell_quantifier",
+                         "fusion_caller",
+                         "svcaller", "hetcaller", "jointcaller", "tools_off", "tools_on",
+                         "mixup_check", "qc", "transcript_assembler"]
+ALGORITHM_FILEONLY_KEYS = ["custom_trim", "vcfanno"]
+# these analysis pipelines use R heavily downstream, and need to have samplenames
+# cleaned up to conform to R specifications
+R_DOWNSTREAM_ANALYSIS = ["rna-seq", "fastrna-seq", "scrna-seq", "chip-seq",
+                         "scrna-seq"]
 
-def organize(dirs, config, run_info_yaml, sample_names=None, add_provenance=True,
+def organize(dirs, config, run_info_yaml, sample_names=None, is_cwl=False,
              integrations=None):
     """Organize run information from a passed YAML file or the Galaxy API.
 
@@ -44,9 +57,10 @@ def organize(dirs, config, run_info_yaml, sample_names=None, add_provenance=True
     logger.info("Using input YAML configuration: %s" % run_info_yaml)
     assert run_info_yaml and os.path.exists(run_info_yaml), \
         "Did not find input sample YAML file: %s" % run_info_yaml
-    run_details = _run_info_from_yaml(dirs, run_info_yaml, config, sample_names)
+    run_details = _run_info_from_yaml(dirs, run_info_yaml, config, sample_names,
+                                      is_cwl=is_cwl, integrations=integrations)
     remote_retriever = None
-    for iname, retriever in integrations.iteritems():
+    for iname, retriever in integrations.items():
         if iname in config:
             run_details = retriever.add_remotes(run_details, config[iname])
             remote_retriever = retriever
@@ -55,7 +69,7 @@ def organize(dirs, config, run_info_yaml, sample_names=None, add_provenance=True
         item["dirs"] = dirs
         if "name" not in item:
             item["name"] = ["", item["description"]]
-        elif isinstance(item["name"], basestring):
+        elif isinstance(item["name"], six.string_types):
             description = "%s-%s" % (item["name"], clean_name(item["description"]))
             item["name"] = [item["name"], description]
             item["description"] = description
@@ -65,6 +79,7 @@ def organize(dirs, config, run_info_yaml, sample_names=None, add_provenance=True
         item.pop("algorithm", None)
         item = add_reference_resources(item, remote_retriever)
         item["config"]["algorithm"]["qc"] = qcsummary.get_qc_tools(item)
+        item["config"]["algorithm"]["vcfanno"] = vcfanno.find_annotations(item, remote_retriever)
         # Create temporary directories and make absolute, expanding environmental variables
         tmp_dir = tz.get_in(["config", "resources", "tmp", "dir"], item)
         if tmp_dir:
@@ -72,10 +87,10 @@ def organize(dirs, config, run_info_yaml, sample_names=None, add_provenance=True
             # otherwise we normalize later in distributed.transaction:
             if os.path.expandvars(tmp_dir) == tmp_dir:
                 tmp_dir = utils.safe_makedir(os.path.expandvars(tmp_dir))
-                tmp_dir = genome.abs_file_paths(tmp_dir)
+                tmp_dir = genome.abs_file_paths(tmp_dir, do_download=not integrations)
             item["config"]["resources"]["tmp"]["dir"] = tmp_dir
         out.append(item)
-    out = _add_provenance(out, dirs, config, add_provenance)
+    out = _add_provenance(out, dirs, config, not is_cwl)
     return out
 
 def normalize_world(data):
@@ -128,8 +143,8 @@ def _add_remote_resources(resources):
     """Retrieve remote resources like GATK/MuTect jars present in S3.
     """
     out = copy.deepcopy(resources)
-    for prog, info in resources.iteritems():
-        for key, val in info.iteritems():
+    for prog, info in resources.items():
+        for key, val in info.items():
             if key == "jar" and objectstore.is_remote(val):
                 store_dir = utils.safe_makedir(os.path.join(os.getcwd(), "inputs", "jars", prog))
                 fname = objectstore.download(val, store_dir, store_dir)
@@ -153,9 +168,12 @@ def add_reference_resources(data, remote_retriever=None):
     """
     aligner = data["config"]["algorithm"].get("aligner", None)
     if remote_retriever:
-        data["reference"] = remote_retriever.get_refs(data["genome_build"], aligner, data["config"])
+        data["reference"] = remote_retriever.get_refs(data["genome_build"],
+                                                      alignment.get_aligner_with_aliases(aligner, data),
+                                                      data["config"])
     else:
-        data["reference"] = genome.get_refs(data["genome_build"], aligner, data["dirs"]["galaxy"], data)
+        data["reference"] = genome.get_refs(data["genome_build"], alignment.get_aligner_with_aliases(aligner, data),
+                                            data["dirs"]["galaxy"], data)
         _check_ref_files(data["reference"], data)
     # back compatible `sam_ref` target
     data["sam_ref"] = utils.get_in(data, ("reference", "fasta", "base"))
@@ -165,17 +183,35 @@ def add_reference_resources(data, remote_retriever=None):
         data = remote_retriever.get_resources(data["genome_build"], ref_loc, data)
     else:
         data["genome_resources"] = genome.get_resources(data["genome_build"], ref_loc, data)
+    data["genome_resources"] = genome.add_required_resources(data["genome_resources"])
     if effects.get_type(data) == "snpeff" and "snpeff" not in data["reference"]:
         data["reference"]["snpeff"] = effects.get_snpeff_files(data)
     if "genome_context" not in data["reference"]:
         data["reference"]["genome_context"] = annotation.get_context_files(data)
+    if "viral" not in data["reference"]:
+        data["reference"]["viral"] = viral.get_files(data)
+    if not data["reference"]["viral"]:
+        data["reference"]["viral"] = None
+    if "versions" not in data["reference"]:
+        data["reference"]["versions"] = _get_data_versions(data)
+
     data = _fill_validation_targets(data)
     data = _fill_prioritization_targets(data)
+    data = _fill_capture_regions(data)
     # Re-enable when we have ability to re-define gemini configuration directory
     if False:
-        if population.do_db_build([data], need_bam=False):
-            data["reference"]["gemini"] = population.get_gemini_files(data)
+        data["reference"]["gemini"] = population.get_gemini_files(data)
     return data
+
+def _get_data_versions(data):
+    """Retrieve CSV file with version information for reference data.
+    """
+    genome_dir = install.get_genome_dir(data["genome_build"], data["dirs"].get("galaxy"), data)
+    if genome_dir:
+        version_file = os.path.join(genome_dir, "versions.csv")
+        if version_file and os.path.exists(version_file):
+            return version_file
+    return None
 
 def _check_ref_files(ref_info, data):
     problems = []
@@ -201,9 +237,10 @@ def _fill_validation_targets(data):
     """Fill validation targets pointing to globally installed truth sets.
     """
     ref_file = dd.get_ref_file(data)
-    sv_targets = zip(itertools.repeat("svvalidate"),
-                     tz.get_in(["config", "algorithm", "svvalidate"], data, {}).keys())
-    for vtarget in [list(xs) for xs in [["validate"], ["validate_regions"]] + sv_targets]:
+    sv_truth = tz.get_in(["config", "algorithm", "svvalidate"], data, {})
+    sv_targets = (zip(itertools.repeat("svvalidate"), sv_truth.keys()) if isinstance(sv_truth, dict)
+                  else [["svvalidate"]])
+    for vtarget in [list(xs) for xs in [["validate"], ["validate_regions"], ["variant_regions"]] + list(sv_targets)]:
         val = tz.get_in(["config", "algorithm"] + vtarget, data)
         if val and not os.path.exists(val) and not objectstore.is_remote(val):
             installed_val = os.path.normpath(os.path.join(os.path.dirname(ref_file), os.pardir, "validation", val))
@@ -214,13 +251,35 @@ def _fill_validation_targets(data):
                                  (vtarget, val))
     return data
 
+def _fill_capture_regions(data):
+    """Fill short-hand specification of BED capture regions.
+    """
+    special_targets = {"sv_regions": ("exons", "transcripts")}
+    ref_file = dd.get_ref_file(data)
+    for target in ["variant_regions", "sv_regions", "coverage"]:
+        val = tz.get_in(["config", "algorithm", target], data)
+        if val and not os.path.exists(val) and not objectstore.is_remote(val):
+            installed_vals = []
+            # Check prioritize directory
+            for ext in [".bed", ".bed.gz"]:
+                installed_vals += glob.glob(os.path.normpath(os.path.join(os.path.dirname(ref_file), os.pardir,
+                                                                          "coverage", val + ext)))
+            if len(installed_vals) == 0:
+                if target not in special_targets or not val.startswith(special_targets[target]):
+                    raise ValueError("Configuration problem. BED file not found for %s: %s" %
+                                     (target, val))
+            else:
+                assert len(installed_vals) == 1, installed_vals
+                data = tz.update_in(data, ["config", "algorithm", target], lambda x: installed_vals[0])
+    return data
+
 def _fill_prioritization_targets(data):
     """Fill in globally installed files for prioritization.
     """
     ref_file = dd.get_ref_file(data)
-    for target in [["svprioritize"], ["coverage"]]:
-        val = tz.get_in(["config", "algorithm"] + target, data)
-        if val and not os.path.exists(val):
+    for target in ["svprioritize", "coverage"]:
+        val = tz.get_in(["config", "algorithm", target], data)
+        if val and not os.path.exists(val) and not objectstore.is_remote(val):
             installed_vals = []
             # Check prioritize directory
             for ext in [".bed", ".bed.gz"]:
@@ -228,13 +287,18 @@ def _fill_prioritization_targets(data):
                                                                           "coverage", "prioritize",
                                                                           val + "*%s" % ext)))
             # Check sv-annotation directory for prioritize gene name lists
-            if target[-1] == "svprioritize":
-                installed_vals += glob.glob(os.path.join(
-                    os.path.dirname(os.path.realpath(utils.which("simple_sv_annotation.py"))),
-                    "%s*" % os.path.basename(val)))
+            if target == "svprioritize":
+                simple_sv_bin = utils.which("simple_sv_annotation.py")
+                if simple_sv_bin:
+                    installed_vals += glob.glob(os.path.join(os.path.dirname(os.path.realpath(simple_sv_bin)),
+                                                             "%s*" % os.path.basename(val)))
             if len(installed_vals) == 0:
-                raise ValueError("Configuration problem. BED file not found for %s: %s" %
-                                 (target, val))
+                # some targets can be filled in later
+                if target not in set(["coverage"]):
+                    raise ValueError("Configuration problem. BED file not found for %s: %s" %
+                                     (target, val))
+                else:
+                    installed_val = val
             elif len(installed_vals) == 1:
                 installed_val = installed_vals[0]
             else:
@@ -247,7 +311,7 @@ def _fill_prioritization_targets(data):
                 # handle date-stamped inputs
                 if not installed_val:
                     installed_val = sorted(installed_vals, reverse=True)[0]
-            data = tz.update_in(data, ["config", "algorithm"] + target, lambda x: installed_val)
+            data = tz.update_in(data, ["config", "algorithm", target], lambda x: installed_val)
     return data
 
 # ## Sample and BAM read group naming
@@ -258,12 +322,12 @@ def _clean_metadata(data):
     # Ensure batches are strings and have no duplicates
     if batches:
         if isinstance(batches, (list, tuple)):
-            batches = [str(x) for x in sorted(list(set(batches)))]
+            batches = [_clean_characters(x) for x in sorted(list(set(batches)))]
         else:
-            batches = str(batches)
+            batches = _clean_characters(batches)
         data["metadata"]["batch"] = batches
     # If we have jointcalling, add a single batch if not present
-    elif tz.get_in(["algorithm", "jointcaller"], data):
+    elif tz.get_in(["algorithm", "jointcaller"], data) or "gvcf" in tz.get_in(["algorithm", "tools_on"], data):
         if "metadata" not in data:
             data["metadata"] = {}
         data["metadata"]["batch"] = "%s-joint" % dd.get_sample_name(data)
@@ -276,18 +340,75 @@ def _clean_algorithm(data):
     for key in ["variantcaller", "jointcaller", "svcaller"]:
         val = tz.get_in(["algorithm", key], data)
         if val:
-            if not isinstance(val, (list, tuple)) and isinstance(val, basestring):
+            if not isinstance(val, (list, tuple)) and isinstance(val, six.string_types):
                 val = [val]
             # check for cases like [false] or [None]
-            if len(val) == 1 and not val[0] or val[0] == "None":
-                val = False
+            if isinstance(val, (list, tuple)):
+                if len(val) == 1 and not val[0] or (isinstance(val[0], six.string_types)
+                                                    and val[0].lower() in ["none", "false"]):
+                    val = False
             data["algorithm"][key] = val
+    return data
+
+def _organize_tools_on(data, is_cwl):
+    """Ensure tools_on inputs match items specified elsewhere.
+    """
+    # want tools_on: [gvcf] if joint calling specified in CWL
+    if is_cwl:
+        if tz.get_in(["algorithm", "jointcaller"], data):
+            val = tz.get_in(["algorithm", "tools_on"], data)
+            if not val:
+                val = []
+            if not isinstance(val, (list, tuple)):
+                val = [val]
+            if "gvcf" not in val:
+                val.append("gvcf")
+            data["algorithm"]["tools_on"] = val
+    return data
+
+def _clean_background(data):
+    """Clean up background specification, remaining back compatible.
+    """
+    allowed_keys = set(["variant", "cnv_reference"])
+    val = tz.get_in(["algorithm", "background"], data)
+    errors = []
+    if val:
+        out = {}
+        # old style specification, single string for variant
+        if isinstance(val, six.string_types):
+            out["variant"] = _file_to_abs(val, [os.getcwd()])
+        elif isinstance(val, dict):
+            for k, v in val.items():
+                if k in allowed_keys:
+                    if isinstance(v, six.string_types):
+                        out[k] = _file_to_abs(v, [os.getcwd()])
+                    else:
+                        assert isinstance(v, dict)
+                        for ik, iv in v.items():
+                            v[ik] = _file_to_abs(iv, [os.getcwd()])
+                        out[k] = v
+                else:
+                    errors.append("Unexpected key: %s" % k)
+        else:
+            errors.append("Unexpected input: %s" % val)
+        if errors:
+            raise ValueError("Problematic algorithm background specification for %s:\n %s" %
+                             (data["description"], "\n".join(errors)))
+        out["cnv_reference"] = structural.standardize_cnv_reference({"config": data,
+                                                                     "description": data["description"]})
+        data["algorithm"]["background"] = out
     return data
 
 def _clean_characters(x):
     """Clean problem characters in sample lane or descriptions.
     """
-    for problem in [" ", ".", "/", "\\", "[", "]", "&", ";", "#", "+"]:
+    if not isinstance(x, six.string_types):
+        x = str(x)
+    else:
+        if not all(ord(char) < 128 for char in x):
+            msg = "Found unicode character in input YAML (%s)" % (x)
+            raise ValueError(repr(msg))
+    for problem in [" ", ".", "/", "\\", "[", "]", "&", ";", "#", "+", ":", ")", "("]:
         x = x.replace(problem, "_")
     return x
 
@@ -366,12 +487,13 @@ def _check_for_problem_somatic_batches(items, config):
         if vcfutils.get_paired(items):
             vcfutils.check_paired_problems(items)
         elif len(items) > 1:
-            vcs = list(set(tz.concat([dd.get_variantcaller(data) or [] for data in items])))
-            if any(x.lower().startswith("vardict") for x in vcs):
+            vcs = vcfutils.get_somatic_variantcallers(items)
+            if "vardict" in vcs:
                 raise ValueError("VarDict does not support pooled non-tumor/normal calling, in batch %s: %s"
                                  % (batch, [dd.get_sample_name(data) for data in items]))
-            elif any(x.lower() == "mutect" for x in vcs):
-                raise ValueError("Mutect requires a 'phenotype: tumor' sample for calling, in batch %s: %s"
+            elif "mutect" in vcs or "mutect2" in vcs:
+                raise ValueError("MuTect and MuTect2 require a 'phenotype: tumor' sample for calling, "
+                                 "in batch %s: %s"
                                  % (batch, [dd.get_sample_name(data) for data in items]))
 
 def _check_for_misplaced(xs, subkey, other_keys):
@@ -389,41 +511,43 @@ def _check_for_misplaced(xs, subkey, other_keys):
                                     "----------------+-----------------+----------------"] +
                                    ["% 15s | % 15s | % 15s" % (a, b, c) for (a, b, c) in problems]))
 
-ALGORITHM_KEYS = set(["platform", "aligner", "bam_clean", "bam_sort",
-                      "trim_reads", "adapters", "custom_trim", "species", "kraken",
-                      "align_split_size", "align_prep_method", "save_diskspace",
-                      "transcriptome_align",
-                      "quality_format", "write_summary", "merge_bamprep",
-                      "coverage", "coverage_interval", "ploidy", "indelcaller",
-                      "variantcaller", "jointcaller", "variant_regions",
-                      "peakcaller", "chip_method",
-                      "effects", "mark_duplicates",
-                      "svcaller", "svvalidate", "svprioritize",
-                      "hlacaller", "hlavalidate",
-                      "sv_regions", "hetcaller", "recalibrate", "realign",
-                      "phasing", "validate",
+def _check_for_degenerate_interesting_groups(items):
+    """ Make sure interesting_groups specify existing metadata and that
+    the interesting_group is not all of the same for all of the samples
+    """
+    igkey = ("algorithm", "bcbiornaseq", "interesting_groups")
+    interesting_groups = tz.get_in(igkey, items[0], [])
+    if isinstance(interesting_groups, str):
+        interesting_groups = [interesting_groups]
+    for group in interesting_groups:
+        values = [tz.get_in(("metadata", group), x, None) for x in items]
+        if all(x is None for x in values):
+            raise ValueError("group %s is labelled as an interesting group, "
+                             "but does not appear in the metadata." % group)
+        if len(list(tz.unique(values))) == 1:
+            raise ValueError("group %s is marked as an interesting group, "
+                             "but all samples have the same value." % group)
+
+TOPLEVEL_KEYS = set(["description", "analysis", "genome_build", "metadata", "algorithm",
+                     "resources", "files", "vrn_file", "lane", "upload", "rgnames"])
+ALGORITHM_KEYS = set(["bam_sort", "custom_trim", "kraken", "write_summary",
+                      "merge_bamprep", "indelcaller", "effects", 
+                      "svvalidate", "hlavalidate", "phasing", "validate",
                       "validate_regions", "validate_genome_build", "validate_method",
-                      "clinical_reporting", "nomap_split_size", "transcriptome_fasta",
-                      "nomap_split_targets", "ensemble", "background",
-                      "disambiguate", "strandedness", "fusion_mode",
-                      "min_read_length", "coverage_depth_min", "callable_min_size",
-                      "min_allele_fraction", "umi_type", "minimum_barcode_depth",
-                      "cellular_barcodes", "vcfanno",
-                      "remove_lcr", "joint_group_size",
-                      "archive", "tools_off", "tools_on", "transcript_assembler",
-                      "mixup_check", "expression_caller", "qc", "positional_umi",
-                      "singlecell_quantifier" , "spikein_fasta"] +
-                     # development
-                     ["cwl_reporting"] +
+                      "clinical_reporting", "nomap_split_size", 
+                      "nomap_split_targets", "background", "qc", "preseq",] +
                      # back compatibility
-                      ["coverage_depth_max", "coverage_depth"])
+                     ["remove_lcr", "coverage_depth_max", "coverage_depth"] +
+                     # from datadict.LOOKUPS
+                     dd.get_algorithm_keys())
 ALG_ALLOW_BOOLEANS = set(["merge_bamprep", "mark_duplicates", "remove_lcr",
-                          "clinical_reporting", "transcriptome_align",
+                          "demultiplexed", "clinical_reporting", "transcriptome_align",
                           "fusion_mode", "assemble_transcripts", "trim_reads",
+                          "quantify_genome_alignments", 
                           "recalibrate", "realign", "cwl_reporting", "save_diskspace"])
 ALG_ALLOW_FALSE = set(["aligner", "align_split_size", "bam_clean", "bam_sort",
                        "effects", "phasing", "mixup_check", "indelcaller",
-                       "variantcaller", "positional_umi"])
+                       "variantcaller", "positional_umi", "maxcov_downsample", "preseq"])
 
 ALG_DOC_URL = "https://bcbio-nextgen.readthedocs.org/en/latest/contents/configuration.html#algorithm-parameters"
 
@@ -433,7 +557,7 @@ def _check_algorithm_keys(item):
     Needs to be manually updated when introducing new keys, but avoids silent bugs
     with typos in key names.
     """
-    problem_keys = [k for k in item["algorithm"].iterkeys() if k not in ALGORITHM_KEYS]
+    problem_keys = [k for k in item["algorithm"].keys() if k not in ALGORITHM_KEYS]
     if len(problem_keys) > 0:
         raise ValueError("Unexpected configuration keyword in 'algorithm' section: %s\n"
                          "See configuration documentation for supported options:\n%s\n"
@@ -464,7 +588,10 @@ def _check_toplevel_misplaced(item):
         raise ValueError("Unexpected configuration keywords found in top level of %s: %s\n"
                          "This should be placed in the 'algorithm' section."
                          % (item["description"], problem_keys))
-
+    problem_keys = [k for k in item.keys() if k not in TOPLEVEL_KEYS]
+    if len(problem_keys) > 0:
+        raise ValueError("Unexpected configuration keywords found in top level of %s: %s\n"
+                         % (item["description"], problem_keys))
 
 def _detect_fastq_format(in_file, MAX_RECORDS=1000):
     ranges = {"sanger": (33, 126),
@@ -515,8 +642,7 @@ def _check_quality_format(items):
                              "is not supported. Supported values are %s."
                              % (SAMPLE_FORMAT.values()))
 
-        fastq_file = next((file for file in item.get('files') or [] if
-                           any([ext for ext in fastq_extensions if ext in file])), None)
+        fastq_file = next((f for f in item.get("files") or [] if f.endswith(tuple(fastq_extensions))), None)
 
         if fastq_file and specified_format and not objectstore.is_remote(fastq_file):
             fastq_format = _detect_fastq_format(fastq_file)
@@ -533,7 +659,7 @@ def _check_quality_format(items):
 def _check_aligner(item):
     """Ensure specified aligner is valid choice.
     """
-    allowed = set(alignment.TOOLS.keys() + [None, False])
+    allowed = set(list(alignment.TOOLS.keys()) + [None, False])
     if item["algorithm"].get("aligner") not in allowed:
         raise ValueError("Unexpected algorithm 'aligner' parameter: %s\n"
                          "Supported options: %s\n" %
@@ -542,14 +668,57 @@ def _check_aligner(item):
 def _check_variantcaller(item):
     """Ensure specified variantcaller is a valid choice.
     """
-    allowed = set(genotype.get_variantcallers().keys() + [None, False])
+    allowed = set(list(genotype.get_variantcallers().keys()) + [None, False])
     vcs = item["algorithm"].get("variantcaller")
-    if not isinstance(vcs, (tuple, list)):
-        vcs = [vcs]
-    problem = [x for x in vcs if x not in allowed]
+    if not isinstance(vcs, dict):
+        vcs = {"variantcaller": vcs}
+    for vc_set in vcs.values():
+        if not isinstance(vc_set, (tuple, list)):
+            vc_set = [vc_set]
+        problem = [x for x in vc_set if x not in allowed]
+        if len(problem) > 0:
+            raise ValueError("Unexpected algorithm 'variantcaller' parameter: %s\n"
+                             "Supported options: %s\n" % (problem, sorted(list(allowed))))
+    # Ensure germline somatic calling only specified with tumor/normal samples
+    if "germline" in vcs or "somatic" in vcs:
+        paired = vcfutils.get_paired_phenotype(item)
+        if not paired:
+            raise ValueError("%s: somatic/germline calling in 'variantcaller' "
+                             "but tumor/normal metadata phenotype not specified" % dd.get_sample_name(item))
+
+def _check_svcaller(item):
+    """Ensure the provide structural variant caller is valid.
+    """
+    allowed = set(reduce(operator.add, [list(d.keys()) for d in structural._CALLERS.values()]) + [None, False])
+    svs = item["algorithm"].get("svcaller")
+    if not isinstance(svs, (list, tuple)):
+        svs = [svs]
+    problem = [x for x in svs if x not in allowed]
     if len(problem) > 0:
-        raise ValueError("Unexpected algorithm 'variantcaller' parameter: %s\n"
-                         "Supported options: %s\n" % (problem, sorted(list(allowed))))
+        raise ValueError("Unexpected algorithm 'svcaller' parameters: %s\n"
+                         "Supported options: %s\n" % (" ".join(["'%s'" % x for x in problem]),
+                                                      sorted(list(allowed))))
+    if "gatk-cnv" in svs and "cnvkit" in svs:
+        raise ValueError("%s uses `gatk-cnv' and 'cnvkit', please use on one of these CNV callers" %
+                         dd.get_sample_name(item))
+
+def _get_as_list(item, k):
+    out = item["algorithm"].get(k)
+    if not out:
+        out = []
+    if not isinstance(out, (list, tuple)):
+        out = [svs]
+    return out
+
+def _check_hetcaller(item):
+    """Ensure upstream SV callers requires to heterogeneity analysis are available.
+    """
+    svs = _get_as_list(item, "svcaller")
+    hets = _get_as_list(item, "hetcaller")
+    if hets or any([x in svs for x in ["titancna", "purecn"]]):
+        if not any([x in svs for x in ["cnvkit", "gatk-cnv"]]):
+            raise ValueError("Heterogeneity caller used but need CNV calls. Add `gatk-cnv` "
+                             "or `cnvkit` to `svcaller` in sample: %s" % item["description"])
 
 def _check_jointcaller(data):
     """Ensure specified jointcaller is valid.
@@ -561,13 +730,40 @@ def _check_jointcaller(data):
     problem = [x for x in cs if x not in allowed]
     if len(problem) > 0:
         raise ValueError("Unexpected algorithm 'jointcaller' parameter: %s\n"
-                         "Supported options: %s\n" % (problem, sorted(list(allowed))))
+                         "Supported options: %s\n" % (problem, sorted(list(allowed), key=lambda x: x or "")))
 
 def _check_indelcaller(data):
     c = data["algorithm"].get("indelcaller")
     if c and isinstance(c, (tuple, list)):
         raise ValueError("In sample %s, indelcaller specified as list. Can only be a single item: %s"
                          % (data["description"], str(c)))
+
+def _check_hlacaller(data):
+    supported_genomes = set(["hg38"])
+    c = data["algorithm"].get("hlacaller")
+    if c:
+        if data["genome_build"] not in supported_genomes:
+            raise ValueError("In sample %s, HLA caller specified but genome %s not in supported: %s" %
+                             (data["description"], data["genome_build"], ", ".join(sorted(list(supported_genomes)))))
+
+def _check_realign(data):
+    """Check for realignment, which is not supported in GATK4
+    """
+    if "gatk4" not in data["algorithm"].get("tools_off", []) and not "gatk4" == data["algorithm"].get("tools_off"):
+        if data["algorithm"].get("realign"):
+            raise ValueError("In sample %s, realign specified but it is not supported for GATK4. "
+                             "Realignment is generally not necessary for most variant callers." %
+                             (dd.get_sample_name(data)))
+
+def _check_trim(data):
+    """Check for valid values for trim_reads.
+    """
+    trim = data["algorithm"].get("trim_reads")
+    if trim:
+        if trim == "fastp" and data["algorithm"].get("align_split_size") is not False:
+            raise ValueError("In sample %s, `trim_reads: fastp` currently requires `align_split_size: false`" %
+                             (dd.get_sample_name(data)))
+
 
 def _check_sample_config(items, in_file, config):
     """Identify common problems in input sample configuration files.
@@ -576,6 +772,7 @@ def _check_sample_config(items, in_file, config):
     _check_quality_format(items)
     _check_for_duplicates(items, "lane")
     _check_for_duplicates(items, "description")
+    _check_for_degenerate_interesting_groups(items)
     _check_for_batch_clashes(items)
     _check_for_problem_somatic_batches(items, config)
     _check_for_misplaced(items, "algorithm",
@@ -587,8 +784,13 @@ def _check_sample_config(items, in_file, config):
     [_check_algorithm_values(x) for x in items]
     [_check_aligner(x) for x in items]
     [_check_variantcaller(x) for x in items]
+    [_check_svcaller(x) for x in items]
+    [_check_hetcaller(x) for x in items]
     [_check_indelcaller(x) for x in items]
     [_check_jointcaller(x) for x in items]
+    [_check_hlacaller(x) for x in items]
+    [_check_realign(x) for x in items]
+    [_check_trim(x) for x in items]
 
 # ## Read bcbio_sample.yaml files
 
@@ -597,9 +799,9 @@ def _file_to_abs(x, dnames, makedir=False):
     """
     if x is None or os.path.isabs(x):
         return x
-    elif isinstance(x, basestring) and objectstore.is_remote(x):
+    elif isinstance(x, six.string_types) and objectstore.is_remote(x):
         return x
-    elif isinstance(x, basestring) and x.lower() == "none":
+    elif isinstance(x, six.string_types) and x.lower() == "none":
         return None
     else:
         for dname in dnames:
@@ -614,11 +816,11 @@ def _file_to_abs(x, dnames, makedir=False):
 
 def _normalize_files(item, fc_dir=None):
     """Ensure the files argument is a list of absolute file names.
-    Handles BAM, single and paired end fastq.
+    Handles BAM, single and paired end fastq, as well as split inputs.
     """
     files = item.get("files")
     if files:
-        if isinstance(files, basestring):
+        if isinstance(files, six.string_types):
             files = [files]
         fastq_dir = flowcell.get_fastq_dir(fc_dir) if fc_dir else os.getcwd()
         files = [_file_to_abs(x, [os.getcwd(), fc_dir, fastq_dir]) for x in files]
@@ -628,7 +830,9 @@ def _normalize_files(item, fc_dir=None):
     return item
 
 def _sanity_check_files(item, files):
-    """Ensure input files correspond with supported
+    """Ensure input files correspond with supported approaches.
+
+    Handles BAM, fastqs, plus split fastqs.
     """
     msg = None
     file_types = set([("bam" if x.endswith(".bam") else "fastq") for x in files if x])
@@ -639,14 +843,16 @@ def _sanity_check_files(item, files):
         if len(files) != 1:
             msg = "Expect a single BAM file input as input"
     elif file_type == "fastq":
-        if len(files) not in [1, 2]:
-            msg = "Expect either 1 (single end) or 2 (paired end) fastq inputs"
+        if len(files) not in [1, 2] and item["analysis"].lower() != "scrna-seq":
+            pair_types = set([len(xs) for xs in fastq.combine_pairs(files)])
+            if len(pair_types) != 1 or pair_types.pop() not in [1, 2]:
+                msg = "Expect either 1 (single end) or 2 (paired end) fastq inputs"
         if len(files) == 2 and files[0] == files[1]:
             msg = "Expect both fastq files to not be the same"
     if msg:
         raise ValueError("%s for %s: %s" % (msg, item.get("description", ""), files))
 
-def _check_yaml_file(yaml_fn):
+def validate_yaml(yaml_in, yaml_fn):
     """Check with yamllint the yaml syntaxes
     Looking for duplicate keys."""
     try:
@@ -656,8 +862,13 @@ def _check_yaml_file(yaml_fn):
         return
     conf = """{"extends": "relaxed",
                "rules": {"trailing-spaces": {"level": "warning"},
+                         "new-lines": {"level": "warning"},
                          "new-line-at-end-of-file": {"level": "warning"}}}"""
-    out = linter.run(open(yaml_fn), YamlLintConfig(conf))
+    if utils.file_exists(yaml_in):
+        with open(yaml_in) as in_handle:
+            yaml_in = in_handle.read()
+    out = linter.run(yaml_in, YamlLintConfig(conf))
+
     for problem in out:
         msg = '%(fn)s:%(line)s:%(col)s: [%(level)s] %(msg)s' % {'fn': yaml_fn,
                                                                 'line': problem.line,
@@ -667,12 +878,13 @@ def _check_yaml_file(yaml_fn):
         if problem.level == "error":
             raise ValueError(msg)
 
-def _run_info_from_yaml(dirs, run_info_yaml, config, sample_names=None):
+def _run_info_from_yaml(dirs, run_info_yaml, config, sample_names=None,
+                        is_cwl=False, integrations=None):
     """Read run information from a passed YAML file.
     """
-    _check_yaml_file(run_info_yaml)
+    validate_yaml(run_info_yaml, run_info_yaml)
     with open(run_info_yaml) as in_handle:
-        loaded = yaml.load(in_handle)
+        loaded = yaml.safe_load(in_handle)
     fc_name, fc_date = None, None
     if dirs.get("flowcell"):
         try:
@@ -682,40 +894,57 @@ def _run_info_from_yaml(dirs, run_info_yaml, config, sample_names=None):
     global_config = {}
     global_vars = {}
     resources = {}
-    integrations = {}
+    integration_config = {}
     if isinstance(loaded, dict):
         global_config = copy.deepcopy(loaded)
         del global_config["details"]
-        if "fc_name" in loaded and "fc_date" in loaded:
+        if "fc_name" in loaded:
             fc_name = loaded["fc_name"].replace(" ", "_")
+        if "fc_date" in loaded:
             fc_date = str(loaded["fc_date"]).replace(" ", "_")
         global_vars = global_config.pop("globals", {})
         resources = global_config.pop("resources", {})
         for iname in ["arvados"]:
-            integrations[iname] = global_config.pop(iname, {})
+            integration_config[iname] = global_config.pop(iname, {})
         loaded = loaded["details"]
     if sample_names:
         loaded = [x for x in loaded if x["description"] in sample_names]
+
+    if integrations:
+        for iname, retriever in integrations.items():
+            if iname in config:
+                config[iname] = retriever.set_cache(config[iname])
+                loaded = retriever.add_remotes(loaded, config[iname])
 
     run_details = []
     for i, item in enumerate(loaded):
         item = _normalize_files(item, dirs.get("flowcell"))
         if "lane" not in item:
             item["lane"] = str(i + 1)
-        item["lane"] = _clean_characters(str(item["lane"]))
+        item["lane"] = _clean_characters(item["lane"])
         if "description" not in item:
             if _item_is_bam(item):
                 item["description"] = get_sample_name(item["files"][0])
             else:
                 raise ValueError("No `description` sample name provided for input #%s" % (i + 1))
-        item["description"] = _clean_characters(str(item["description"]))
-        if "upload" not in item:
+        description = _clean_characters(item["description"])
+        item["description"] = description
+        # make names R safe if we are likely to use R downstream
+        if item["analysis"].lower() in R_DOWNSTREAM_ANALYSIS:
+            if description[0].isdigit():
+                valid = "X" + description
+                logger.info("%s is not a valid R name, converting to %s." % (description, valid))
+                item["description"] = valid
+        if "upload" not in item and not is_cwl:
             upload = global_config.get("upload", {})
             # Handle specifying a local directory directly in upload
-            if isinstance(upload, basestring):
+            if isinstance(upload, six.string_types):
                 upload = {"dir": upload}
-            if fc_name and fc_date:
+            if not upload:
+                upload["dir"] = "../final"
+            if fc_name:
                 upload["fc_name"] = fc_name
+            if fc_date:
                 upload["fc_date"] = fc_date
             upload["run_id"] = ""
             if upload.get("dir"):
@@ -723,35 +952,54 @@ def _run_info_from_yaml(dirs, run_info_yaml, config, sample_names=None):
             item["upload"] = upload
         item["algorithm"] = _replace_global_vars(item["algorithm"], global_vars)
         item["algorithm"] = genome.abs_file_paths(item["algorithm"],
-                                                  ignore_keys=ALGORITHM_NOPATH_KEYS)
+                                                  ignore_keys=ALGORITHM_NOPATH_KEYS,
+                                                  fileonly_keys=ALGORITHM_FILEONLY_KEYS,
+                                                  do_download=all(not x for x in integrations.values()))
         item["genome_build"] = str(item.get("genome_build", ""))
-        item["algorithm"] = _add_algorithm_defaults(item["algorithm"])
+        item["algorithm"] = _add_algorithm_defaults(item["algorithm"], item.get("analysis", ""), is_cwl)
         item["metadata"] = add_metadata_defaults(item.get("metadata", {}))
         item["rgnames"] = prep_rg_names(item, config, fc_name, fc_date)
         if item.get("files"):
-            item["files"] = [genome.abs_file_paths(f) for f in item["files"]]
+            item["files"] = [genome.abs_file_paths(f, do_download=all(not x for x in integrations.values()))
+                             for f in item["files"]]
         elif "files" in item:
             del item["files"]
-        if item.get("vrn_file") and isinstance(item["vrn_file"], basestring):
-            inputs_dir = utils.safe_makedir(os.path.join(dirs.get("work", os.getcwd()), "inputs",
-                                                         item["description"]))
-            item["vrn_file"] = vcfutils.bgzip_and_index(genome.abs_file_paths(item["vrn_file"]), config,
-                                                        remove_orig=False, out_dir=inputs_dir)
+        if item.get("vrn_file") and isinstance(item["vrn_file"], six.string_types):
+            item["vrn_file"] = genome.abs_file_paths(item["vrn_file"],
+                                                     do_download=all(not x for x in integrations.values()))
+            if os.path.isfile(item["vrn_file"]):
+                # Try to prepare in place (or use ready to go inputs)
+                try:
+                    item["vrn_file"] = vcfutils.bgzip_and_index(item["vrn_file"], config,
+                                                                remove_orig=False)
+                # In case of permission errors, fix in inputs directory
+                except IOError:
+                    inputs_dir = utils.safe_makedir(os.path.join(dirs.get("work", os.getcwd()), "inputs",
+                                                                 item["description"]))
+                    item["vrn_file"] = vcfutils.bgzip_and_index(item["vrn_file"], config,
+                                                                remove_orig=False, out_dir=inputs_dir)
+            if not tz.get_in(("metadata", "batch"), item) and tz.get_in(["algorithm", "validate"], item):
+                raise ValueError("%s: Please specify a metadata batch for variant file (vrn_file) input.\n" %
+                                 (item["description"]) +
+                                 "Batching with a standard sample provides callable regions for validation.")
         item = _clean_metadata(item)
         item = _clean_algorithm(item)
+        item = _organize_tools_on(item, is_cwl)
+        item = _clean_background(item)
         # Add any global resource specifications
         if "resources" not in item:
             item["resources"] = {}
-        for prog, pkvs in resources.iteritems():
+        for prog, pkvs in resources.items():
             if prog not in item["resources"]:
                 item["resources"][prog] = {}
-            for key, val in pkvs.iteritems():
-                item["resources"][prog][key] = val
-        for iname, ivals in integrations.items():
+            if pkvs is not None:
+                for key, val in pkvs.items():
+                    item["resources"][prog][key] = val
+        for iname, ivals in integration_config.items():
             if ivals:
                 if iname not in item:
                     item[iname] = {}
-                for k, v in ivals.iteritems():
+                for k, v in ivals.items():
                     item[iname][k] = v
 
         run_details.append(item)
@@ -772,38 +1020,77 @@ def add_metadata_defaults(md):
             md[k] = v
     return md
 
-def _add_algorithm_defaults(algorithm):
+def _get_nomap_split_targets(analysis, is_cwl):
+    """Chromosome splitting logic based on run type.
+
+    RNA-seq -- aim for smaller chunks (half chromosomes) to avoid memory issues
+    CWL -- aim for larger chunks to allow batching and multicore
+    old style -- larger number of chunks for better parallelization
+    """
+    if analysis.lower().find("rna-seq") >= 0:
+        return 50
+    elif is_cwl:
+        return 20
+    else:
+        return 200
+
+def _add_algorithm_defaults(algorithm, analysis, is_cwl):
     """Central location specifying defaults for algorithm inputs.
 
     Converts allowed multiple inputs into lists if specified as a single item.
     Converts required single items into string if specified as a list
     """
-    defaults = {"archive": [],
+    if not algorithm:
+        algorithm = {}
+    defaults = {"archive": None,
                 "tools_off": [],
                 "tools_on": [],
                 "qc": [],
+                "trim_reads": False,
+                "adapters": [],
+                "effects": "snpeff",
+                "quality_format": "standard",
+                "expression_caller": ["salmon"] if analysis.lower().find("rna-seq") >= 0 else None,
+                "align_split_size": None,
+                "bam_clean": False,
                 "nomap_split_size": 250,
-                "nomap_split_targets": 200,
-                "mark_duplicates": True,
+                "nomap_split_targets": _get_nomap_split_targets(analysis, is_cwl),
+                "mark_duplicates": False if not algorithm.get("aligner") else True,
                 "coverage_interval": None,
+                "min_allele_fraction": 10.0,
                 "recalibrate": False,
                 "realign": False,
+                "ensemble": None,
+                "exclude_regions": [],
                 "variant_regions": None,
+                "svcaller": [],
+                "svvalidate": None,
+                "svprioritize": None,
                 "validate": None,
-                "validate_regions": None}
-    convert_to_list = set(["archive", "tools_off", "tools_on", "hetcaller", "variantcaller", "qc", "disambiguate"])
+                "validate_regions": None,
+                "vcfanno": []}
+    convert_to_list = set(["tools_off", "tools_on", "hetcaller", "variantcaller", "svcaller", "qc", "disambiguate",
+                           "vcfanno", "adapters", "custom_trim", "exclude_regions"])
     convert_to_single = set(["hlacaller", "indelcaller", "validate_method"])
     for k, v in defaults.items():
         if k not in algorithm:
             algorithm[k] = v
     for k, v in algorithm.items():
         if k in convert_to_list:
-            if v and not isinstance(v, (list, tuple)):
+            if v and not isinstance(v, (list, tuple)) and not isinstance(v, dict):
                 algorithm[k] = [v]
+            # ensure dictionary specified inputs get converted into individual lists
+            elif v and not isinstance(v, (list, tuple)) and isinstance(v, dict):
+                new = {}
+                for innerk, innerv in v.items():
+                    if innerv and not isinstance(innerv, (list, tuple)) and not isinstance(innerv, dict):
+                        innerv = [innerv]
+                    new[innerk] = innerv
+                algorithm[k] = new
             elif v is None:
                 algorithm[k] = []
         elif k in convert_to_single:
-            if v and not isinstance(v, basestring):
+            if v and not isinstance(v, six.string_types):
                 if isinstance(v, (list, tuple)) and len(v) == 1:
                     algorithm[k] = v[0]
                 else:
@@ -821,8 +1108,8 @@ def _replace_global_vars(xs, global_vars):
         return [_replace_global_vars(x) for x in xs]
     elif isinstance(xs, dict):
         final = {}
-        for k, v in xs.iteritems():
-            if isinstance(v, basestring) and v in global_vars:
+        for k, v in xs.items():
+            if isinstance(v, six.string_types) and v in global_vars:
                 v = global_vars[v]
             final[k] = v
         return final

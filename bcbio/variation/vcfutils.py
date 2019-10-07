@@ -3,23 +3,24 @@
 
 from collections import namedtuple, defaultdict
 import copy
-import gzip
-import itertools
 import os
+import pprint
 import shutil
 import subprocess
 
 import toolz as tz
+
+import six
+from six.moves import zip
 
 from bcbio import broad, utils
 from bcbio.bam import ref
 from bcbio.distributed.multi import run_multicore, zeromq_aware_logging
 from bcbio.distributed.split import parallel_split_combine
 from bcbio.distributed.transaction import file_transaction
-from bcbio.pipeline import config_utils, shared, tools
+from bcbio.pipeline import config_utils, tools
 from bcbio.pipeline import datadict as dd
 from bcbio.provenance import do
-from bcbio.variation import bamprep
 
 # ## Tumor/normal paired cancer analyses
 
@@ -32,6 +33,27 @@ def is_paired_analysis(align_bams, items):
     """
     return get_paired_bams(align_bams, items) is not None
 
+
+def somatic_batches(items):
+    """Group items into somatic calling batches (tumor-only or tumor/normal).
+
+    Returns batches, where a data item may be in pairs, and somatic and non_somatic
+    (which are the original list of items).
+    """
+    non_somatic = []
+    somatic = []
+    data_by_batches = defaultdict(list)
+    for data in items:
+        if not get_paired_phenotype(data):
+            non_somatic.append(data)
+        else:
+            somatic.append(data)
+            batches = dd.get_batches(data)
+            if batches:
+                for batch in batches:
+                    data_by_batches[batch].append(data)
+    return data_by_batches.values(), somatic, non_somatic
+
 def get_paired(items):
     return get_paired_bams([dd.get_align_bam(d) for d in items], items)
 
@@ -41,7 +63,7 @@ def get_paired_bams(align_bams, items):
     normal BAMs or with normal VCF panels.
     """
     tumor_bam, tumor_name, normal_bam, normal_name, normal_panel, tumor_config, normal_data = (None,) * 7
-    for bamfile, item in itertools.izip(align_bams, items):
+    for bamfile, item in zip(align_bams, items):
         phenotype = get_paired_phenotype(item)
         if phenotype == "normal":
             normal_bam = bamfile
@@ -52,11 +74,24 @@ def get_paired_bams(align_bams, items):
             tumor_name = dd.get_sample_name(item)
             tumor_data = item
             tumor_config = item["config"]
-            normal_panel = item["config"]["algorithm"].get("background")
+            normal_panel = dd.get_background_variant(item)
     if tumor_bam or tumor_name:
         return PairedData(tumor_bam, tumor_name, normal_bam,
                           normal_name, normal_panel, tumor_config,
                           tumor_data, normal_data)
+
+def get_somatic_variantcallers(items):
+    """Retrieve all variant callers for somatic calling, handling somatic/germline.
+    """
+    out = []
+    for data in items:
+        vcs = dd.get_variantcaller(data)
+        if isinstance(vcs, dict) and "somatic" in vcs:
+            vcs = vcs["somatic"]
+        if not isinstance(vcs, (list, tuple)):
+            vcs = [vcs]
+        out += vcs
+    return set(vcs)
 
 def check_paired_problems(items):
     """Check for incorrectly paired tumor/normal samples in a batch.
@@ -73,6 +108,13 @@ def check_paired_problems(items):
         raise ValueError("Found normal sample without tumor in batch %s: %s" %
                          (tz.get_in(["metadata", "batch"], items[0]),
                           [dd.get_sample_name(data) for data in items]))
+    else:
+        vcs = get_somatic_variantcallers(items)
+        if "mutect" in vcs or "mutect2" in vcs or "strelka2" in vcs:
+            paired = get_paired(items)
+            if not (paired.normal_data or paired.normal_panel):
+                raise ValueError("MuTect, MuTect2 and Strelka2 somatic calling requires normal sample or panel: %s" %
+                                 [dd.get_sample_name(data) for data in items])
 
 def get_paired_phenotype(data):
     """Retrieve the phenotype for a paired tumor/normal analysis.
@@ -89,7 +131,7 @@ def fix_ambiguous_cl(column=4):
     Some callers include these if present in the reference genome but GATK does
     not like them.
     """
-    return r"""awk -F$'\t' -v OFS='\t' '{if ($0 !~ /^#/) gsub(/[KMRYSWBVHDX]/, "N", $%s) } {print}'""" % column
+    return r"""awk -F$'\t' -v OFS='\t' '{if ($0 !~ /^#/) gsub(/[KMRYSWBVHDXkmryswbvhdx]/, "N", $%s) } {print}'""" % column
 
 def remove_dup_cl():
     """awk command line to remove duplicate alleles where the ref and alt are the same.
@@ -121,6 +163,24 @@ def write_empty_vcf(out_file, config=None, samples=None):
     else:
         return out_file
 
+def to_standardonly(in_file, ref_file, data):
+    """Subset a VCF input file to standard chromosomes (1-22,X,Y,MT).
+    """
+    from bcbio.heterogeneity import chromhacks
+    out_file = "%s-stdchrs.vcf.gz" % utils.splitext_plus(in_file)[0]
+    if not utils.file_exists(out_file):
+        stds = []
+        for c in ref.file_contigs(ref_file):
+            if chromhacks.is_nonalt(c.name):
+                stds.append(c.name)
+        if stds:
+            with file_transaction(data, out_file) as tx_out_file:
+                stds = ",".join(stds)
+                in_file = bgzip_and_index(in_file, data["config"])
+                cmd = "bcftools view -o {tx_out_file} -O z {in_file} {stds}"
+                do.run(cmd.format(**locals()), "Subset to standard chromosomes")
+    return bgzip_and_index(out_file, data["config"]) if utils.file_exists(out_file) else in_file
+
 def split_snps_indels(orig_file, ref_file, config):
     """Split a variant call file into SNPs and INDELs for processing.
     """
@@ -142,7 +202,7 @@ def split_snps_indels(orig_file, ref_file, config):
 def get_normal_sample(in_file):
     """Retrieve normal sample if normal/turmor
     """
-    with (gzip.open(in_file) if in_file.endswith(".gz") else open(in_file)) as in_handle:
+    with utils.open_gzipsafe(in_file) as in_handle:
         for line in in_handle:
             if line.startswith("##PEDIGREE"):
                 parts = line.strip().split("Original=")[1][:-1]
@@ -151,7 +211,7 @@ def get_normal_sample(in_file):
 def get_samples(in_file):
     """Retrieve samples present in a VCF file
     """
-    with (gzip.open(in_file) if in_file.endswith(".gz") else open(in_file)) as in_handle:
+    with utils.open_gzipsafe(in_file) as in_handle:
         for line in in_handle:
             if line.startswith("#CHROM"):
                 parts = line.strip().split("\t")
@@ -192,23 +252,36 @@ def select_sample(in_file, sample, out_file, config, filters=None):
     """
     if not utils.file_exists(out_file):
         with file_transaction(config, out_file) as tx_out_file:
-            if in_file.endswith(".gz"):
-                bgzip_and_index(in_file, config)
-            bcftools = config_utils.get_program("bcftools", config)
-            output_type = "z" if out_file.endswith(".gz") else "v"
-            filter_str = "-f %s" % filters if filters is not None else ""  # filters could be e.g. 'PASS,.'
-            cmd = "{bcftools} view -O {output_type} {filter_str} {in_file} -s {sample} > {tx_out_file}"
-            do.run(cmd.format(**locals()), "Select sample: %s" % sample)
+            if len(get_samples(in_file)) == 1:
+                shutil.copy(in_file, tx_out_file)
+            else:
+                if in_file.endswith(".gz"):
+                    bgzip_and_index(in_file, config)
+                bcftools = config_utils.get_program("bcftools", config)
+                output_type = "z" if out_file.endswith(".gz") else "v"
+                filter_str = "-f %s" % filters if filters is not None else ""  # filters could be e.g. 'PASS,.'
+                cmd = "{bcftools} view -O {output_type} {filter_str} {in_file} -s {sample} > {tx_out_file}"
+                do.run(cmd.format(**locals()), "Select sample: %s" % sample)
     if out_file.endswith(".gz"):
         bgzip_and_index(out_file, config)
     return out_file
 
 def vcf_has_variants(in_file):
     if os.path.exists(in_file):
-        with (gzip.open(in_file) if in_file.endswith(".gz") else open(in_file)) as in_handle:
+        with utils.open_gzipsafe(in_file) as in_handle:
             for line in in_handle:
                 if line.strip() and not line.startswith("#"):
                     return True
+    return False
+
+def vcf_has_nonfiltered_variants(in_file):
+    if os.path.exists(in_file):
+        with utils.open_gzipsafe(in_file) as in_handle:
+            for line in in_handle:
+                if line.strip() and not line.startswith("#"):
+                    parts = line.split("\t")
+                    if parts[6] in set(["PASS", "."]):
+                        return True
     return False
 
 # ## Merging of variant files
@@ -258,7 +331,7 @@ def _check_samples_nodups(fnames):
     for f in fnames:
         for s in get_samples(f):
             counts[s] += 1
-    duplicates = [s for s, c in counts.iteritems() if c > 1]
+    duplicates = [s for s, c in counts.items() if c > 1]
     if duplicates:
         raise ValueError("Duplicate samples found in inputs %s: %s" % (duplicates, fnames))
 
@@ -275,56 +348,113 @@ def _sort_by_region(fnames, regions, ref_file, config):
         if fname not in added_fnames:
             if isinstance(region, (list, tuple)):
                 c, s, e = region
+            elif isinstance(region, six.string_types) and region.find(":") >= 0:
+                c, coords = region.split(":")
+                s, e = [int(x) for x in coords.split("-")]
             else:
                 c = region
                 s, e = 0, 0
-            sitems.append(((contig_order[c], s, e), fname))
+            sitems.append(((contig_order[c], s, e), c, fname))
             added_fnames.add(fname)
     sitems.sort()
-    return [x[1] for x in sitems]
+    return [(x[1], x[2]) for x in sitems]
 
 def concat_variant_files(orig_files, out_file, regions, ref_file, config):
     """Concatenate multiple variant files from regions into a single output file.
 
-    Lightweight approach to merging VCF files split by regions with the same
-    sample information, so no complex merging needed. Handles both plain text
-    and bgzipped/tabix indexed outputs.
-
-    Falls back to bcftools concat if fails due to GATK stringency issues.
+    Uses GATK4's GatherVcfs, falling back to bcftools concat --naive if it fails.
+    These both only combine samples and avoid parsing, allowing scaling to large
+    file sizes.
     """
     if not utils.file_exists(out_file):
-        sorted_files = _sort_by_region(orig_files, regions, ref_file, config)
-        exist_files = [x for x in sorted_files if os.path.exists(x) and vcf_has_variants(x)]
-        if len(exist_files) == 0:  # no non-empty inputs, merge the empty ones
-            exist_files = [x for x in sorted_files if os.path.exists(x)]
-        ready_files = run_multicore(p_bgzip_and_index, [[x, config] for x in exist_files], config)
-        input_file_list = "%s-files.list" % utils.splitext_plus(out_file)[0]
-        with open(input_file_list, "w") as out_handle:
-            for fname in ready_files:
-                out_handle.write(fname + "\n")
-        failed = False
-        with file_transaction(config, out_file) as tx_out_file:
-            params = ["org.broadinstitute.gatk.tools.CatVariants",
-                      "-R", ref_file,
-                      "-V", input_file_list,
-                      "-out", tx_out_file,
-                      "-assumeSorted"]
-            jvm_opts = broad.get_gatk_framework_opts(config, os.path.dirname(tx_out_file), include_gatk=False)
-            try:
-                do.run(broad.gatk_cmd("gatk-framework", jvm_opts, params), "Concat variant files", log_error=False)
-            except subprocess.CalledProcessError as msg:
-                if ("We require all VCFs to have complete VCF headers" in str(msg) or
-                      "Features added out of order" in str(msg) or
-                      "The reference allele cannot be missing" in str(msg)):
-                    os.remove(tx_out_file)
-                    failed = True
-                else:
-                    raise
-        if failed:
-            return _run_concat_variant_files_bcftools(input_file_list, out_file, config)
+        input_file_list = _get_file_list(orig_files, out_file, regions, ref_file, config)
+        try:
+            out_file = _run_concat_variant_files_gatk4(input_file_list, out_file, config)
+        except subprocess.CalledProcessError as msg:
+            if ("We require all VCFs to have complete VCF headers" in str(msg)
+                  or "Features added out of order" in str(msg)
+                  or "The reference allele cannot be missing" in str(msg)):
+                out_file = _run_concat_variant_files_bcftools(input_file_list, out_file, config, naive=True)
+            else:
+                print("## Original contigs")
+                pprint.pprint(zip(regions, orig_files))
+                print("## Ordered file list")
+                with open(input_file_list) as in_handle:
+                    print(in_handle.read())
+                raise
     if out_file.endswith(".gz"):
         bgzip_and_index(out_file, config)
     return out_file
+
+def _run_concat_variant_files_gatk4(input_file_list, out_file, config):
+    """Use GATK4 GatherVcfs for concatenation of scattered VCFs.
+    """
+    if not utils.file_exists(out_file):
+        with file_transaction(config, out_file) as tx_out_file:
+            params = ["-T", "GatherVcfs", "-I", input_file_list, "-O", tx_out_file]
+            # Use GATK4 for merging, tools_off: [gatk4] applies to variant calling
+            config = utils.deepish_copy(config)
+            if "gatk4" in dd.get_tools_off({"config": config}):
+                config["algorithm"]["tools_off"].remove("gatk4")
+            # Allow specification of verbosity in the unique style this tool uses
+            resources = config_utils.get_resources("gatk", config)
+            opts = [str(x) for x in resources.get("options", [])]
+            if "--verbosity" in opts:
+                params += ["--VERBOSITY:%s" % opts[opts.index("--verbosity") + 1]]
+            broad_runner = broad.runner_from_config(config)
+            broad_runner.run_gatk(params)
+    return out_file
+
+def _get_file_list(orig_files, out_file, regions, ref_file, config):
+    """Create file with region sorted list of non-empty VCFs for concatenating.
+    """
+    sorted_files = _sort_by_region(orig_files, regions, ref_file, config)
+    exist_files = [(c, x) for c, x in sorted_files if os.path.exists(x) and vcf_has_variants(x)]
+    if len(exist_files) == 0:  # no non-empty inputs, merge the empty ones
+        exist_files = [x for c, x in sorted_files if os.path.exists(x)]
+    elif len(exist_files) > 1:
+        exist_files = _fix_gatk_header(exist_files, out_file, config)
+    else:
+        exist_files = [x for c, x in exist_files]
+    ready_files = run_multicore(p_bgzip_and_index, [[x, config] for x in exist_files], config)
+    input_file_list = "%s-files.list" % utils.splitext_plus(out_file)[0]
+    with open(input_file_list, "w") as out_handle:
+        for fname in ready_files:
+            out_handle.write(fname + "\n")
+    return input_file_list
+
+def _fix_gatk_header(exist_files, out_file, config):
+    """Ensure consistent headers for VCF concatenation.
+
+    Fixes problems for genomes that start with chrM by reheadering the first file.
+    These files do haploid variant calling which lack the PID phasing key/value
+    pair in FORMAT, so initial chrM samples cause errors during concatenation
+    due to the lack of header merging. This fixes this by updating the first header.
+    """
+    from bcbio.variation import ploidy
+    c, base_file = exist_files[0]
+    replace_file = base_file
+    items = [{"config": config}]
+    if ploidy.get_ploidy(items, region=(c, 1, 2)) == 1:
+        for c, x in exist_files[1:]:
+            if ploidy.get_ploidy(items, (c, 1, 2)) > 1:
+                replace_file = x
+                break
+    base_fix_file = os.path.join(os.path.dirname(out_file),
+                                 "%s-fixheader%s" % utils.splitext_plus(os.path.basename(base_file)))
+    with file_transaction(config, base_fix_file) as tx_out_file:
+        header_file = "%s-header.vcf" % utils.splitext_plus(tx_out_file)[0]
+        do.run("zgrep ^# %s > %s"
+                % (replace_file, header_file), "Prepare header file for merging")
+        resources = config_utils.get_resources("picard", config)
+        ropts = []
+        if "options" in resources:
+            ropts += [str(x) for x in resources.get("options", [])]
+        do.run("%s && picard FixVcfHeader HEADER=%s INPUT=%s OUTPUT=%s %s" %
+               (utils.get_java_clprep(), header_file, base_file, base_fix_file, " ".join(ropts)),
+               "Reheader initial VCF file in merge")
+    bgzip_and_index(base_fix_file, config)
+    return [base_fix_file] + [x for (c, x) in exist_files[1:]]
 
 def concat_variant_files_bcftools(orig_files, out_file, config):
     if not utils.file_exists(out_file):
@@ -338,14 +468,18 @@ def concat_variant_files_bcftools(orig_files, out_file, config):
     else:
         return bgzip_and_index(out_file, config)
 
-def _run_concat_variant_files_bcftools(in_list, out_file, config):
-    """Concatenate variant files using bcftools concat.
+def _run_concat_variant_files_bcftools(in_list, out_file, config, naive=False):
+    """Concatenate variant files using bcftools concat, potentially using the fast naive option.
     """
     if not utils.file_exists(out_file):
         with file_transaction(config, out_file) as tx_out_file:
             bcftools = config_utils.get_program("bcftools", config)
             output_type = "z" if out_file.endswith(".gz") else "v"
-            cmd = "{bcftools} concat --allow-overlaps -O {output_type} --file-list {in_list} -o {tx_out_file}"
+            if naive:
+                args = "--naive"
+            else:
+                args = "--allow-overlaps"
+            cmd = "{bcftools} concat {args} -O {output_type} --file-list {in_list} -o {tx_out_file}"
             do.run(cmd.format(**locals()), "bcftools concat variants")
     if out_file.endswith(".gz"):
         bgzip_and_index(out_file, config)
@@ -357,10 +491,6 @@ def combine_variant_files(orig_files, out_file, ref_file, config,
 
     Handles cases where we split files into SNPs/Indels for processing then
     need to merge back into a final file.
-
-    Will parallelize up to 4 cores based on documented recommendations:
-    https://www.broadinstitute.org/gatk/gatkdocs/
-    org_broadinstitute_gatk_tools_walkers_variantutils_CombineVariants.php
     """
     in_pipeline = False
     if isinstance(orig_files, dict):
@@ -371,30 +501,14 @@ def combine_variant_files(orig_files, out_file, ref_file, config,
         with file_transaction(config, out_file) as tx_out_file:
             exist_files = [x for x in orig_files if os.path.exists(x)]
             ready_files = run_multicore(p_bgzip_and_index, [[x, config] for x in exist_files], config)
-            params = ["-T", "CombineVariants",
-                      "-R", ref_file,
-                      "--out", tx_out_file]
-            priority_order = []
-            for i, ready_file in enumerate(ready_files):
-                name = "v%s" % i
-                params.extend(["--variant:{name}".format(name=name), ready_file])
-                priority_order.append(name)
-            params.extend(["--rod_priority_list", ",".join(priority_order)])
-            params.extend(["--genotypemergeoption", "PRIORITIZE"])
-            if quiet_out:
-                params.extend(["--suppressCommandLineHeader", "--setKey", "null"])
-            if region:
-                variant_regions = config["algorithm"].get("variant_regions", None)
-                cur_region = shared.subset_variant_regions(variant_regions, region, out_file)
-                if cur_region:
-                    params += ["-L", bamprep.region_to_gatk(cur_region),
-                               "--interval_set_rule", "INTERSECTION"]
-            cores = tz.get_in(["algorithm", "num_cores"], config, 1)
-            if cores > 1:
-                params += ["-nt", min(cores, 4)]
+            dict_file = "%s.dict" % utils.splitext_plus(ref_file)[0]
+            cores = dd.get_num_cores({"config": config})
             memscale = {"magnitude": 0.9 * cores, "direction": "increase"} if cores > 1 else None
-            jvm_opts = broad.get_gatk_framework_opts(config, os.path.dirname(tx_out_file), memscale=memscale)
-            do.run(broad.gatk_cmd("gatk-framework", jvm_opts, params), "Combine variant files")
+            cmd = ["picard"] + broad.get_picard_opts(config, memscale) + \
+                  ["MergeVcfs", "D=%s" % dict_file, "O=%s" % tx_out_file] + \
+                  ["I=%s" % f for f in ready_files]
+            cmd = "%s && %s" % (utils.get_java_clprep(), " ".join(cmd))
+            do.run(cmd, "Combine variant files")
     if out_file.endswith(".gz"):
         bgzip_and_index(out_file, config)
     if in_pipeline:
@@ -418,6 +532,26 @@ def sort_by_ref(vcf_file, data):
             with utils.chdir(os.path.dirname(tx_out_file)):
                 do.run(cmd.format(**locals()), "Sort VCF by reference")
     return bgzip_and_index(out_file, data["config"])
+
+def add_contig_to_header_cl(ref_file, out_file):
+    """Add update ##contig lines to VCF header, required for bcftools/GATK compatibility.
+    """
+    header_file = "%s-contig_header.txt" % utils.splitext_plus(out_file)[0]
+    with open(header_file, "w") as out_handle:
+        for region in ref.file_contigs(ref_file, {}):
+            out_handle.write("##contig=<ID=%s,length=%s>\n" % (region.name, region.size))
+    return ("grep -v ^##contig | bcftools annotate -h %s" % header_file)
+
+def add_contig_to_header(line, ref_file):
+    """Streaming target to add contigs to a VCF file header.
+    """
+    if line.startswith("##fileformat=VCF"):
+        out = [line]
+        for region in ref.file_contigs(ref_file):
+            out.append("##contig=<ID=%s,length=%s>" % (region.name, region.size))
+        return "\n".join(out)
+    else:
+        return line
 
 # ## Parallel VCF file combining
 
@@ -446,7 +580,6 @@ def parallel_combine_variants(orig_files, out_file, ref_file, config, run_parall
 # ## VCF preparation
 
 def move_vcf(orig_file, new_file):
-
     """Move a VCF file with associated index.
     """
     for ext in ["", ".idx", ".tbi"]:
@@ -524,3 +657,53 @@ def tabix_index(in_file, config, preset=None, tabix_args=None):
                 cmd = "{tabix} -f -p {preset} {tx_in_file}"
             do.run(cmd.format(**locals()), "tabix index %s" % os.path.basename(in_file))
     return out_file
+
+def is_gvcf_file(in_file):
+    """Check if an input file is raw gVCF
+    """
+    to_check = 100
+    n = 0
+    with utils.open_gzipsafe(in_file) as in_handle:
+        for line in in_handle:
+            if not line.startswith("##"):
+                if n > to_check:
+                    break
+                n += 1
+                parts = line.split("\t")
+                # GATK
+                if parts[4] == "<NON_REF>":
+                    return True
+                # strelka2
+                if parts[4] == "." and parts[7].startswith("BLOCKAVG"):
+                    return True
+                # freebayes
+                if parts[4] == "<*>":
+                    return True
+                # platypue
+                if parts[4] == "N" and parts[6] == "REFCALL":
+                    return True
+
+def cyvcf_add_filter(rec, name):
+    """Add a FILTER value to a cyvcf2 record
+    """
+    if rec.FILTER:
+        filters = rec.FILTER.split(";")
+    else:
+        filters = []
+    if name not in filters:
+        filters.append(name)
+        rec.FILTER = filters
+    return rec
+
+def cyvcf_remove_filter(rec, name):
+    """Remove filter with the given name from a cyvcf2 record
+    """
+    if rec.FILTER:
+        filters = rec.FILTER.split(";")
+    else:
+        filters = []
+    new_filters = [x for x in filters if not str(x) == name]
+    if len(new_filters) == 0:
+        new_filters = ["PASS"]
+    rec.FILTER = new_filters
+    return rec

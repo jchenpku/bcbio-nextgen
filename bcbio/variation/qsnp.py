@@ -16,6 +16,9 @@ from bcbio.provenance import do
 from bcbio.variation import annotation, bedutils
 from bcbio.variation.vcfutils import get_paired_bams, bgzip_and_index, combine_variant_files, PairedData
 
+import six
+
+
 def is_installed(config):
     """Check for qsnp installation on machine.
     """
@@ -61,7 +64,7 @@ def _run_qsnp_paired(align_bams, items, ref_file, assoc_files,
     if not utils.file_exists(out_file):
         out_file = out_file.replace(".gz", "")
         with file_transaction(config, out_file) as tx_out_file:
-            with tx_tmpdir() as tmpdir:
+            with tx_tmpdir(config) as tmpdir:
                 with utils.chdir(tmpdir):
                     paired = get_paired_bams(align_bams, items)
                     qsnp = config_utils.get_program("qsnp", config)
@@ -76,18 +79,15 @@ def _run_qsnp_paired(align_bams, items, ref_file, assoc_files,
                     do.run(cl.format(**locals()), "Genotyping paired variants with Qsnp", {})
         out_file = _filter_vcf(out_file)
         out_file = bgzip_and_index(out_file, config)
-    ann_file = annotation.annotate_nongatk_vcf(out_file, align_bams,
-                                               assoc_files.get("dbsnp"),
-                                               ref_file, config)
-    return ann_file
+    return out_file
 
 def _clean_regions(items, region):
     """Intersect region with target file if it exists"""
-    variant_regions = bedutils.merge_overlaps(bedutils.population_variant_regions(items), items[0])
+    variant_regions = bedutils.population_variant_regions(items, merged=True)
     with utils.tmpfile() as tx_out_file:
         target = subset_variant_regions(variant_regions, region, tx_out_file, items)
         if target:
-            if isinstance(target, basestring) and os.path.isfile(target):
+            if isinstance(target, six.string_types) and os.path.isfile(target):
                 target = _load_regions(target)
             else:
                 target = [target]
@@ -133,9 +133,9 @@ def _create_input(paired, out_file, ref_file, snp_file, qsnp_file):
     ini_file["[ids]"]["donor"] = paired.tumor_name
     ini_file["[outputFiles]"]["vcf"] = out_file
     with open(qsnp_file, "w") as out_handle:
-        for k, v in ini_file.iteritems():
+        for k, v in ini_file.items():
             out_handle.write("%s\n" % k)
-            for opt, value in v.iteritems():
+            for opt, value in v.items():
                 if value != "":
                     out_handle.write("%s = %s\n" % (opt, value))
 

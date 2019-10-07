@@ -18,15 +18,18 @@ def count(data):
     count reads mapping to genes using featureCounts
     http://subread.sourceforge.net
     """
-    in_bam = dd.get_work_bam(data)
-    sorted_bam = bam.sort(in_bam, dd.get_config(data), order="queryname")
+    in_bam = dd.get_work_bam(data) or dd.get_align_bam(data)
+    out_dir = os.path.join(dd.get_work_dir(data), "align", dd.get_sample_name(data))
+    if dd.get_aligner(data) == "star":
+        out_dir = os.path.join(out_dir, "%s_%s" % (dd.get_sample_name(data), dd.get_aligner(data)))
+    sorted_bam = bam.sort(in_bam, dd.get_config(data), order="queryname", out_dir=safe_makedir(out_dir))
     gtf_file = dd.get_gtf_file(data)
     work_dir = dd.get_work_dir(data)
     out_dir = os.path.join(work_dir, "htseq-count")
     safe_makedir(out_dir)
     count_file = os.path.join(out_dir, dd.get_sample_name(data)) + ".counts"
     summary_file = os.path.join(out_dir, dd.get_sample_name(data)) + ".counts.summary"
-    if file_exists(count_file):
+    if file_exists(count_file) and _is_fixed_count_file(count_file):
         return count_file
 
     featureCounts = config_utils.get_program("featureCounts", dd.get_config(data))
@@ -44,25 +47,32 @@ def count(data):
         tx_count_file, tx_summary_file = tx_files
         do.run(cmd.format(**locals()), message.format(**locals()))
     fixed_count_file = _format_count_file(count_file, data)
-    fixed_summary_file = _change_sample_name(summary_file, dd.get_sample_name(data))
+    fixed_summary_file = _change_sample_name(
+        summary_file, dd.get_sample_name(data), data=data)
     shutil.move(fixed_count_file, count_file)
     shutil.move(fixed_summary_file, summary_file)
 
     return count_file
 
-def _change_sample_name(in_file, sample_name):
+def _change_sample_name(in_file, sample_name, data=None):
     """Fix name in feature counts log file to get the same
        name in multiqc report.
     """
     out_file = append_stem(in_file, "_fixed")
-    with file_transaction(out_file) as tx_out:
+    with file_transaction(data, out_file) as tx_out:
         with open(tx_out, "w") as out_handle:
             with open(in_file) as in_handle:
                 for line in in_handle:
                     if line.startswith("Status"):
                         line = "Status\t%s.bam" % sample_name
-                    print >>out_handle, line.strip()
+                    out_handle.write("%s\n" % line.strip())
     return out_file
+
+def _is_fixed_count_file(count_file):
+    if os.path.exists(count_file):
+        with open(count_file) as in_handle:
+            line = in_handle.readline().split("\t")
+            return len(line) == 2
 
 def _format_count_file(count_file, data):
     """
@@ -72,11 +82,11 @@ def _format_count_file(count_file, data):
     """
     COUNT_COLUMN = 5
     out_file = os.path.splitext(count_file)[0] + ".fixed.counts"
-    if file_exists(out_file):
+    if file_exists(out_file) and _is_fixed_count_file(out_file):
         return out_file
 
-    df = pd.io.parsers.read_table(count_file, sep="\t", index_col=0, header=1)
-    df_sub = df.ix[:, COUNT_COLUMN]
+    df = pd.io.parsers.read_csv(count_file, sep="\t", index_col=0, header=1)
+    df_sub = df.iloc[:, COUNT_COLUMN]
     with file_transaction(data, out_file) as tx_out_file:
         df_sub.to_csv(tx_out_file, sep="\t", index_label="id", header=False)
     return out_file

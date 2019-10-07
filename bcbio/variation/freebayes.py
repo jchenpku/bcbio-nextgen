@@ -6,6 +6,7 @@ https://github.com/ekg/freebayes
 import os
 import sys
 
+import six
 import toolz as tz
 
 from bcbio import utils
@@ -43,20 +44,18 @@ def _freebayes_options_from_config(items, config, out_file, region=None):
     if (isinstance(region, (list, tuple)) and chromhacks.is_mitochondrial(region[0])
           and cur_ploidy >= base_ploidy and "--min-alternate-fraction" not in opts and "-F" not in opts):
         opts += ["--min-alternate-fraction", "0.01"]
-    variant_regions = bedutils.merge_overlaps(bedutils.population_variant_regions(items), items[0])
+    variant_regions = bedutils.population_variant_regions(items, merged=True)
     # Produce gVCF output
     if any("gvcf" in dd.get_tools_on(d) for d in items):
         opts += ["--gvcf", "--gvcf-chunk", "50000"]
     no_target_regions = False
     target = shared.subset_variant_regions(variant_regions, region, out_file, items)
     if target:
-        if isinstance(target, basestring) and os.path.isfile(target):
-            if any(tz.get_in(["config", "algorithm", "coverage_interval"], x, "").lower() == "genome"
-                   for x in items):
-                target = shared.remove_highdepth_regions(target, items)
-                if os.path.getsize(target) == 0:
-                    no_target_regions = True
-            opts += ["--targets", target]
+        if isinstance(target, six.string_types) and os.path.isfile(target):
+            if os.path.getsize(target) == 0:
+                no_target_regions = True
+            else:
+                opts += ["--targets", target]
         else:
             opts += ["--region", region_to_freebayes(target)]
     resources = config_utils.get_resources("freebayes", config)
@@ -83,14 +82,16 @@ def run_freebayes(align_bams, items, ref_file, assoc_files, region=None,
                   out_file=None):
     """Run FreeBayes variant calling, either paired tumor/normal or germline calling.
     """
+    items = shared.add_highdepth_genome_exclusion(items)
     if is_paired_analysis(align_bams, items):
         paired = get_paired_bams(align_bams, items)
         if not paired.normal_bam:
             call_file = _run_freebayes_caller(align_bams, items, ref_file,
                                               assoc_files, region, out_file, somatic=paired)
         else:
-            call_file = _run_freebayes_paired(align_bams, items, ref_file,
-                                              assoc_files, region, out_file)
+            call_file = _run_freebayes_paired([paired.tumor_bam, paired.normal_bam],
+                                              [paired.tumor_data, paired.normal_data],
+                                              ref_file, assoc_files, region, out_file)
     else:
         vcfutils.check_paired_problems(items)
         call_file = _run_freebayes_caller(align_bams, items, ref_file,
@@ -110,38 +111,37 @@ def _run_freebayes_caller(align_bams, items, ref_file, assoc_files,
     if out_file is None:
         out_file = "%s-variants.vcf.gz" % os.path.splitext(align_bams[0])[0]
     if not utils.file_exists(out_file):
-        with file_transaction(items[0], out_file) as tx_out_file:
-            freebayes = config_utils.get_program("freebayes", config)
-            input_bams = " ".join("-b %s" % x for x in align_bams)
-            opts, no_target_regions = _freebayes_options_from_config(items, config, out_file, region)
-            if no_target_regions:
-                vcfutils.write_empty_vcf(tx_out_file, config, samples=[dd.get_sample_name(d) for d in items])
-            else:
-                opts = " ".join(opts)
-                # Recommended options from 1000 genomes low-complexity evaluation
-                # https://groups.google.com/d/msg/freebayes/GvxIzjcpbas/1G6e3ArxQ4cJ
-                opts += " --min-repeat-entropy 1"
-                # Remove partial observations, which cause a preference for heterozygote calls
-                # https://github.com/ekg/freebayes/issues/234#issuecomment-205331765
-                opts += " --no-partial-observations"
-                if somatic:
-                    opts = _add_somatic_opts(opts, somatic)
-                compress_cmd = "| bgzip -c" if out_file.endswith("gz") else ""
-                fix_ambig = vcfutils.fix_ambiguous_cl()
-                py_cl = os.path.join(os.path.dirname(sys.executable), "py")
-                cmd = ("{freebayes} -f {ref_file} {opts} {input_bams} "
-                       """| bcftools filter -i 'ALT="<*>" || QUAL > 5' """
-                       "| {fix_ambig} | "
-                       "bcftools annotate -x FMT/DPR | bcftools view -a - | "
-                       "{py_cl} -x 'bcbio.variation.freebayes.remove_missingalt(x)' | "
-                       "vcfallelicprimitives -t DECOMPOSED --keep-geno | vcffixup - | vcfstreamsort | "
-                       "vt normalize -n -r {ref_file} -q - | vcfuniqalleles "
-                       "{compress_cmd} > {tx_out_file}")
-                do.run(cmd.format(**locals()), "Genotyping with FreeBayes", {})
-    ann_file = annotation.annotate_nongatk_vcf(out_file, align_bams,
-                                               assoc_files.get("dbsnp"),
-                                               ref_file, config)
-    return ann_file
+        if not utils.file_exists(out_file):
+            with file_transaction(items[0], out_file) as tx_out_file:
+                freebayes = config_utils.get_program("freebayes", config)
+                input_bams = " ".join("-b %s" % x for x in align_bams)
+                opts, no_target_regions = _freebayes_options_from_config(items, config, out_file, region)
+                if no_target_regions:
+                    vcfutils.write_empty_vcf(tx_out_file, config, samples=[dd.get_sample_name(d) for d in items])
+                else:
+                    opts = " ".join(opts)
+                    # Recommended options from 1000 genomes low-complexity evaluation
+                    # https://groups.google.com/d/msg/freebayes/GvxIzjcpbas/1G6e3ArxQ4cJ
+                    opts += " --min-repeat-entropy 1"
+                    # Remove partial observations, which cause a preference for heterozygote calls
+                    # https://github.com/ekg/freebayes/issues/234#issuecomment-205331765
+                    opts += " --no-partial-observations"
+                    if somatic:
+                        opts = _add_somatic_opts(opts, somatic)
+                    compress_cmd = "| bgzip -c" if out_file.endswith("gz") else ""
+                    # For multi-sample outputs, ensure consistent order
+                    samples = ("-s" + ",".join([dd.get_sample_name(d) for d in items])) if len(items) > 1 else ""
+                    fix_ambig = vcfutils.fix_ambiguous_cl()
+                    py_cl = config_utils.get_program("py", config)
+                    cmd = ("{freebayes} -f {ref_file} {opts} {input_bams} "
+                           """| bcftools filter -i 'ALT="<*>" || QUAL > 5' """
+                           "| {fix_ambig} | bcftools view {samples} -a - | "
+                           "{py_cl} -x 'bcbio.variation.freebayes.remove_missingalt(x)' | "
+                           "vcfallelicprimitives -t DECOMPOSED --keep-geno | vcffixup - | vcfstreamsort | "
+                           "vt normalize -n -r {ref_file} -q - | vcfuniqalleles | vt uniq - 2> /dev/null "
+                           "{compress_cmd} > {tx_out_file}")
+                    do.run(cmd.format(**locals()), "Genotyping with FreeBayes", {})
+    return out_file
 
 def _run_freebayes_paired(align_bams, items, ref_file, assoc_files,
                           region=None, out_file=None):
@@ -158,41 +158,43 @@ def _run_freebayes_paired(align_bams, items, ref_file, assoc_files,
     if out_file is None:
         out_file = "%s-paired-variants.vcf.gz" % os.path.splitext(align_bams[0])[0]
     if not utils.file_exists(out_file):
-        with file_transaction(items[0], out_file) as tx_out_file:
-            paired = get_paired_bams(align_bams, items)
-            assert paired.normal_bam, "Require normal BAM for FreeBayes paired calling and filtering"
+        if not utils.file_exists(out_file):
+            with file_transaction(items[0], out_file) as tx_out_file:
+                paired = get_paired_bams(align_bams, items)
+                assert paired.normal_bam, "Require normal BAM for FreeBayes paired calling and filtering"
 
-            freebayes = config_utils.get_program("freebayes", config)
-            opts, no_target_regions = _freebayes_options_from_config(items, config, out_file, region)
-            if no_target_regions:
-                vcfutils.write_empty_vcf(tx_out_file, config,
-                                         samples=[x for x in [paired.tumor_name, paired.normal_name] if x])
-            else:
-                opts = " ".join(opts)
-                opts += " --min-repeat-entropy 1"
-                opts += " --no-partial-observations"
-                opts = _add_somatic_opts(opts, paired)
-                compress_cmd = "| bgzip -c" if out_file.endswith("gz") else ""
-                fix_ambig = vcfutils.fix_ambiguous_cl()
-                py_cl = os.path.join(os.path.dirname(sys.executable), "py")
-                cl = ("{freebayes} -f {ref_file} {opts} "
-                      "{paired.tumor_bam} {paired.normal_bam} "
-                      """| bcftools filter -i 'ALT="<*>" || QUAL > 5' """
-                      "| {py_cl} -x 'bcbio.variation.freebayes.call_somatic(x)' "
-                      "| {fix_ambig} | bcftools annotate -x FMT/DPR | bcftools view -a - | "
-                      "{py_cl} -x 'bcbio.variation.freebayes.remove_missingalt(x)' | "
-                      "vcfallelicprimitives -t DECOMPOSED --keep-geno | vcffixup - | vcfstreamsort | "
-                      "vt normalize -n -r {ref_file} -q - | vcfuniqalleles "
-                      "{compress_cmd} > {tx_out_file}")
-                do.run(cl.format(**locals()), "Genotyping paired variants with FreeBayes", {})
-    ann_file = annotation.annotate_nongatk_vcf(out_file, align_bams,
-                                               assoc_files.get("dbsnp"), ref_file,
-                                               config)
-    return ann_file
+                freebayes = config_utils.get_program("freebayes", config)
+                opts, no_target_regions = _freebayes_options_from_config(items, config, out_file, region)
+                if no_target_regions:
+                    vcfutils.write_empty_vcf(tx_out_file, config,
+                                            samples=[x for x in [paired.tumor_name, paired.normal_name] if x])
+                else:
+                    opts = " ".join(opts)
+                    opts += " --min-repeat-entropy 1"
+                    opts += " --no-partial-observations"
+                    opts = _add_somatic_opts(opts, paired)
+                    compress_cmd = "| bgzip -c" if out_file.endswith("gz") else ""
+                    # For multi-sample outputs, ensure consistent order
+                    samples = ("-s " + ",".join([dd.get_sample_name(d) for d in items])) if len(items) > 1 else ""
+                    fix_ambig = vcfutils.fix_ambiguous_cl()
+                    bcbio_py = sys.executable
+                    py_cl = os.path.join(os.path.dirname(sys.executable), "py")
+                    cl = ("{freebayes} -f {ref_file} {opts} "
+                          "{paired.tumor_bam} {paired.normal_bam} "
+                          """| bcftools filter -i 'ALT="<*>" || QUAL > 5' """
+                          """| {bcbio_py} -c 'from bcbio.variation import freebayes; """
+                          """freebayes.call_somatic("{paired.tumor_name}", "{paired.normal_name}")' """
+                          "| {fix_ambig} | bcftools view {samples} -a - | "
+                          "{py_cl} -x 'bcbio.variation.freebayes.remove_missingalt(x)' | "
+                          "vcfallelicprimitives -t DECOMPOSED --keep-geno | vcffixup - | vcfstreamsort | "
+                          "vt normalize -n -r {ref_file} -q - | vcfuniqalleles | vt uniq - 2> /dev/null "
+                          "{compress_cmd} > {tx_out_file}")
+                    do.run(cl.format(**locals()), "Genotyping paired variants with FreeBayes", {})
+    return out_file
 
 # ## Filtering
 
-def _check_lods(parts, tumor_thresh, normal_thresh):
+def _check_lods(parts, tumor_thresh, normal_thresh, indexes):
     """Ensure likelihoods for tumor and normal pass thresholds.
 
     Skipped if no FreeBayes GL annotations available.
@@ -202,7 +204,7 @@ def _check_lods(parts, tumor_thresh, normal_thresh):
     except ValueError:
         return True
     try:
-        tumor_gls = [float(x) for x in parts[9].split(":")[gl_index].split(",") if x != "."]
+        tumor_gls = [float(x) for x in parts[indexes["tumor"]].strip().split(":")[gl_index].split(",") if x != "."]
         if tumor_gls:
             tumor_lod = max(tumor_gls[i] - tumor_gls[0] for i in range(1, len(tumor_gls)))
         else:
@@ -211,7 +213,7 @@ def _check_lods(parts, tumor_thresh, normal_thresh):
     except IndexError:
         tumor_lod = -1.0
     try:
-        normal_gls = [float(x) for x in parts[10].split(":")[gl_index].split(",") if x != "."]
+        normal_gls = [float(x) for x in parts[indexes["normal"]].strip().split(":")[gl_index].split(",") if x != "."]
         if normal_gls:
             normal_lod = min(normal_gls[0] - normal_gls[i] for i in range(1, len(normal_gls)))
         else:
@@ -221,7 +223,7 @@ def _check_lods(parts, tumor_thresh, normal_thresh):
         normal_lod = normal_thresh
     return normal_lod >= normal_thresh and tumor_lod >= tumor_thresh
 
-def _check_freqs(parts):
+def _check_freqs(parts, indexes):
     """Ensure frequency of tumor to normal passes a reasonable threshold.
 
     Avoids calling low frequency tumors also present at low frequency in normals,
@@ -254,7 +256,7 @@ def _check_freqs(parts):
         except (IndexError, ValueError, ZeroDivisionError):
             freq = 0.0
         return freq
-    tumor_freq, normal_freq = _calc_freq(parts[9]), _calc_freq(parts[10])
+    tumor_freq, normal_freq = _calc_freq(parts[indexes["tumor"]]), _calc_freq(parts[indexes["normal"]])
     return normal_freq <= 0.001 or normal_freq <= tumor_freq / thresh_ratio
 
 def remove_missingalt(line):
@@ -270,11 +272,10 @@ def remove_missingalt(line):
             return None
     return line
 
-def call_somatic(line):
+def call_somatic(tumor_name, normal_name):
     """Call SOMATIC variants from tumor/normal calls, adding REJECT filters and SOMATIC flag.
 
-    Assumes tumor/normal called with tumor first and normal second, as done in bcbio
-    implementation.
+    Works from stdin and writes to stdout, finding positions of tumor and normal samples.
 
     Uses MuTect like somatic filter based on implementation in speedseq:
     https://github.com/cc2qe/speedseq/blob/e6729aa2589eca4e3a946f398c1a2bdc15a7300d/bin/speedseq#L62
@@ -293,17 +294,13 @@ def call_somatic(line):
     """
     # Thresholds are like phred scores, so 3.5 = phred35
     tumor_thresh, normal_thresh = 3.5, 3.5
-    if line.startswith("#CHROM"):
-        headers = ['##INFO=<ID=SOMATIC,Number=0,Type=Flag,Description="Somatic event">',
+    new_headers = ['##INFO=<ID=SOMATIC,Number=0,Type=Flag,Description="Somatic event">\n',
                    ('##FILTER=<ID=REJECT,Description="Not somatic due to normal call frequency '
-                    'or phred likelihoods: tumor: %s, normal %s.">')
-                    % (int(tumor_thresh * 10), int(normal_thresh * 10))]
-        return "\n".join(headers) + "\n" + line
-    elif line.startswith("#"):
-        return line
-    else:
+                    'or phred likelihoods: tumor: %s, normal %s.">\n')
+                   % (int(tumor_thresh * 10), int(normal_thresh * 10))]
+    def _output_filter_line(line, indexes):
         parts = line.split("\t")
-        if _check_lods(parts, tumor_thresh, normal_thresh) and _check_freqs(parts):
+        if _check_lods(parts, tumor_thresh, normal_thresh, indexes) and _check_freqs(parts, indexes):
             parts[7] = parts[7] + ";SOMATIC"
         else:
             if parts[6] in set([".", "PASS"]):
@@ -311,7 +308,26 @@ def call_somatic(line):
             else:
                 parts[6] += ";REJECT"
         line = "\t".join(parts)
-        return line
+        sys.stdout.write(line)
+    def _write_header(header):
+        for hline in header[:-1] + new_headers + [header[-1]]:
+            sys.stdout.write(hline)
+    header = []
+    indexes = None
+    for line in sys.stdin:
+        if not indexes:
+            if line.startswith("#"):
+                header.append(line)
+            else:
+                parts = header[-1].rstrip().split("\t")
+                indexes = {"tumor": parts.index(tumor_name), "normal": parts.index(normal_name)}
+                _write_header(header)
+                _output_filter_line(line, indexes)
+        else:
+            _output_filter_line(line, indexes)
+    # no calls, only output the header
+    if not indexes:
+        _write_header(header)
 
 def _clean_freebayes_output(line):
     """Clean FreeBayes output to make post-processing with GATK happy.

@@ -1,4 +1,4 @@
-"""Hard filtering of genomic variants.
+"""Cutoff-based soft filtering of genomic variants.
 """
 from distutils.version import LooseVersion
 import math
@@ -18,9 +18,9 @@ from bcbio.variation import vcfutils
 
 # ## General functionality
 
-def hard_w_expression(vcf_file, expression, data, name="+", filterext="",
+def cutoff_w_expression(vcf_file, expression, data, name="+", filterext="",
                       extra_cmd="", limit_regions="variant_regions"):
-    """Perform hard filtering using bcftools expressions like %QUAL < 20 || DP < 4.
+    """Perform cutoff-based soft filtering using bcftools expressions like %QUAL < 20 || DP < 4.
     """
     base, ext = utils.splitext_plus(vcf_file)
     out_file = "{base}-filter{filterext}{ext}".format(**locals())
@@ -36,50 +36,8 @@ def hard_w_expression(vcf_file, expression, data, name="+", filterext="",
                         intervals = "-T %s" % vcfutils.bgzip_and_index(variant_regions, data["config"])
                 cmd = ("{bcftools} filter -O v {intervals} --soft-filter '{name}' "
                        "-e '{expression}' -m '+' {vcf_file} {extra_cmd} {bgzip_cmd} > {tx_out_file}")
-                do.run(cmd.format(**locals()), "Hard filtering %s with %s" % (vcf_file, expression), data)
-            else:
-                shutil.copy(vcf_file, out_file)
-    if out_file.endswith(".vcf.gz"):
-        out_file = vcfutils.bgzip_and_index(out_file, data["config"])
-    return out_file
-
-def genotype_filter(vcf_file, expression, data, name, filterext=""):
-    """Perform genotype based filtering using GATK with the provided expression.
-
-    Adds FT tags to genotypes, rather than the general FILTER flag.
-    """
-    base, ext = utils.splitext_plus(vcf_file)
-    out_file = "{base}-filter{filterext}{ext}".format(**locals())
-    if not utils.file_exists(out_file):
-        with file_transaction(data, out_file) as tx_out_file:
-            params = ["-T", "VariantFiltration",
-                      "-R", tz.get_in(["reference", "fasta", "base"], data),
-                      "--variant", vcf_file,
-                      "--out", tx_out_file,
-                      "--genotypeFilterName", name,
-                      "--genotypeFilterExpression", "'%s'" % expression]
-            jvm_opts = broad.get_gatk_framework_opts(data["config"], os.path.dirname(tx_out_file))
-            do.run(broad.gatk_cmd("gatk-framework", jvm_opts, params), "Filter with expression: %s" % expression)
-    if out_file.endswith(".vcf.gz"):
-        out_file = vcfutils.bgzip_and_index(out_file, data["config"])
-    return out_file
-
-def genotype_filter_toref(vcf_file, expression, data, filterext=""):
-    """Perform genotype filters by converting failing calls to reference, using bcftools
-
-    Prefer the FT approach used in genotype_filter, but bcftools handles complex filter
-    expressions that GATK will not.
-    """
-    base, ext = utils.splitext_plus(vcf_file)
-    out_file = "{base}-filter{filterext}{ext}".format(**locals())
-    if not utils.file_exists(out_file):
-        with file_transaction(data, out_file) as tx_out_file:
-            if vcfutils.vcf_has_variants(vcf_file):
-                bcftools = config_utils.get_program("bcftools", data["config"])
-                output_type = "z" if tx_out_file.endswith(".gz") else "v"
-                cmd = ("{bcftools} filter -O {output_type} "
-                       "-e '{expression}' -S 0 {vcf_file} > {tx_out_file}")
-                do.run(cmd.format(**locals()), "Genotype filtering to ref %s with %s" % (vcf_file, expression), data)
+                do.run(cmd.format(**locals()),
+                       "Cutoff-based soft filtering %s with %s" % (vcf_file, expression), data)
             else:
                 shutil.copy(vcf_file, out_file)
     if out_file.endswith(".vcf.gz"):
@@ -89,9 +47,9 @@ def genotype_filter_toref(vcf_file, expression, data, filterext=""):
 # ## Caller specific
 
 def freebayes(in_file, ref_file, vrn_files, data):
-    """FreeBayes filters: trying custom filter approach before falling back on hard filtering.
+    """FreeBayes filters: cutoff-based soft filtering.
     """
-    out_file = _freebayes_hard(in_file, data)
+    out_file = _freebayes_cutoff(in_file, data)
     #out_file = _freebayes_custom(in_file, ref_file, data)
     return out_file
 
@@ -117,8 +75,8 @@ def _freebayes_custom(in_file, ref_file, data):
         do.run(cmd, "Custom FreeBayes filtering using bcbio.variation")
     return out_file
 
-def _freebayes_hard(in_file, data):
-    """Perform filtering of FreeBayes results, removing low confidence calls.
+def _freebayes_cutoff(in_file, data):
+    """Perform filtering of FreeBayes results, flagging low confidence calls.
 
     Filters using cutoffs on low depth based on Meynert et al's work modeling sensitivity
     of homozygote and heterozygote calling on depth:
@@ -146,12 +104,12 @@ def _freebayes_hard(in_file, data):
         stats = _calc_vcf_stats(in_file)
         if stats["avg_depth"] > 0:
             depth_thresh = int(math.ceil(stats["avg_depth"] + 3 * math.pow(stats["avg_depth"], 0.5)))
-            qual_thresh = depth_thresh * 2.0  # Multiplier from default GATK QD hard filter
-    filters = ('(AF[0] <= 0.5 && (DP < 4 || (DP < 13 && %QUAL < 10))) || '
-               '(AF[0] > 0.5 && (DP < 4 && %QUAL < 50))')
+            qual_thresh = depth_thresh * 2.0  # Multiplier from default GATK QD cutoff filter
+    filters = ('(AF[0] <= 0.5 && (max(FORMAT/DP) < 4 || (max(FORMAT/DP) < 13 && %QUAL < 10))) || '
+               '(AF[0] > 0.5 && (max(FORMAT/DP) < 4 && %QUAL < 50))')
     if depth_thresh:
-        filters += ' || (%QUAL < {qual_thresh} && DP > {depth_thresh} && AF[0] <= 0.5)'.format(**locals())
-    return hard_w_expression(in_file, filters, data, name="FBQualDepth")
+        filters += ' || (%QUAL < {qual_thresh} && max(FORMAT/DP) > {depth_thresh} && AF[0] <= 0.5)'.format(**locals())
+    return cutoff_w_expression(in_file, filters, data, name="FBQualDepth")
 
 def _do_high_depth_filter(data):
     """Check if we should do high depth filtering -- only on germline non-regional calls.
@@ -189,7 +147,7 @@ def _average_called_depth(in_file):
         return 0
 
 def platypus(in_file, data):
-    """Filter Platypus calls, removing Q20 hard filter and replacing with depth and quality based filter.
+    """Filter Platypus calls, removing Q20 filter and replacing with depth and quality based filter.
 
     Platypus uses its own VCF nomenclature: TC == DP, FR == AF
 
@@ -200,23 +158,33 @@ def platypus(in_file, data):
     filters = ('(FR[0] <= 0.5 && TC < 4 && %QUAL < 20) || '
                '(TC < 13 && %QUAL < 10) || '
                '(FR[0] > 0.5 && TC < 4 && %QUAL < 50)')
-    limit_regions = "variant_regions" if "gvcf" not in dd.get_tools_on(data) else None
-    return hard_w_expression(in_file, filters, data, name="PlatQualDepth",
-                             extra_cmd="| sed 's/\\tQ20\\t/\\tPASS\\t/'", limit_regions=limit_regions)
+    limit_regions = "variant_regions" if not vcfutils.is_gvcf_file(in_file) else None
+    return cutoff_w_expression(in_file, filters, data, name="PlatQualDepth",
+                               extra_cmd="| sed 's/\\tQ20\\t/\\tPASS\\t/'", limit_regions=limit_regions)
 
 def samtools(in_file, data):
     """Filter samtools calls based on depth and quality, using similar approaches to FreeBayes.
     """
-    filters = ('((AC[0] / AN) <= 0.5 && DP < 4 && %QUAL < 20) || '
-               '(DP < 13 && %QUAL < 10) || '
-               '((AC[0] / AN) > 0.5 && DP < 4 && %QUAL < 50)')
-    return hard_w_expression(in_file, filters, data, name="stQualDepth")
+    filters = ('((AC[0] / AN) <= 0.5 && max(FORMAT/DP) < 4 && %QUAL < 20) || '
+               '(max(FORMAT/DP) < 13 && %QUAL < 10) || '
+               '((AC[0] / AN) > 0.5 && max(format/DP) < 4 && %QUAL < 50)')
+    return cutoff_w_expression(in_file, filters, data, name="stQualDepth")
 
-def gatk_snp_hard(in_file, data):
-    """Perform hard filtering on GATK SNPs using best-practice recommendations.
+def _gatk_general():
+    """General filters useful for both GATK SNPs and indels.
+
+    Remove low quality, low allele fraction variants at the ends of reads.
+    Generally useful metric identified by looking at 10x data.
+    https://community.10xgenomics.com/t5/Genome-Exome-Forum/Best-practices-for-trimming-adapters-when-variant-calling/m-p/473
+    https://github.com/bcbio/bcbio_validations/tree/master/gatk4#10x-adapter-trimming--low-frequency-allele-filter
+    """
+    return ["(QD < 10.0 && AD[0:1] / (AD[0:1] + AD[0:0]) < 0.25 && ReadPosRankSum < 0.0)"]
+
+def gatk_snp_cutoff(in_file, data):
+    """Perform cutoff-based soft filtering on GATK SNPs using best-practice recommendations.
 
     We have a more lenient mapping quality (MQ) filter compared to GATK defaults.
-    The recommended filter (MQ < 40) is too stringent, so we adjust to 30: 
+    The recommended filter (MQ < 40) is too stringent, so we adjust to 30:
     http://imgur.com/a/oHRVB
 
     QD and FS are not calculated when generating gVCF output:
@@ -224,23 +192,37 @@ def gatk_snp_hard(in_file, data):
 
     The extra command removes escaped quotes in the VCF output which
     pyVCF fails on.
+
+    Does not use the GATK best practice recommend SOR filter (SOR > 3.0) as it
+    has a negative impact on sensitivity relative to precision:
+
+    https://github.com/bcbio/bcbio_validations/tree/master/gatk4#na12878-hg38
     """
-    filters = ["MQ < 30.0", "MQRankSum < -12.5", "ReadPosRankSum < -8.0"]
-    if "gvcf" not in dd.get_tools_on(data):
-        filters += ["QD < 2.0", "FS > 60.0"]
+    filters = ["MQRankSum < -12.5", "ReadPosRankSum < -8.0"]
     # GATK Haplotype caller (v2.2) appears to have much larger HaplotypeScores
     # resulting in excessive filtering, so avoid this metric
     variantcaller = utils.get_in(data, ("config", "algorithm", "variantcaller"))
-    if variantcaller not in ["gatk-haplotype"]:
+    if variantcaller not in ["gatk-haplotype", "haplotyper"]:
         filters.append("HaplotypeScore > 13.0")
-    return hard_w_expression(in_file, 'TYPE="snp" && (%s)' % " || ".join(filters), data, "GATKHardSNP", "SNP",
-                             extra_cmd=r"""| sed 's/\\"//g'""")
+    # Additional filter metrics, unless using raw GATK HaplotypeCaller or Sentieon gVCFs
+    if not (vcfutils.is_gvcf_file(in_file) and variantcaller in ["gatk-haplotype", "haplotyper"]):
+        filters += ["QD < 2.0"]
+        filters += ["FS > 60.0"]
+        filters += _gatk_general()
+        filters += ["MQ < 30.0"]
+    return cutoff_w_expression(in_file, 'TYPE="snp" && (%s)' % " || ".join(filters), data, "GATKCutoffSNP", "SNP",
+                               extra_cmd=r"""| sed 's/\\"//g'""")
 
-def gatk_indel_hard(in_file, data):
-    """Perform hard filtering on GATK indels using best-practice recommendations.
+def gatk_indel_cutoff(in_file, data):
+    """Perform cutoff-based soft filtering on GATK indels using best-practice recommendations.
     """
     filters = ["ReadPosRankSum < -20.0"]
-    if "gvcf" not in dd.get_tools_on(data):
-        filters += ["QD < 2.0", "FS > 200.0"]
-    return hard_w_expression(in_file, 'TYPE="indel" && (%s)' % " || ".join(filters), data, "GATKHardIndel", "INDEL",
-                             extra_cmd=r"""| sed 's/\\"//g'""")
+    variantcaller = utils.get_in(data, ("config", "algorithm", "variantcaller"))
+    # Additional filter metrics, unless using raw GATK HaplotypeCaller or Sentieon gVCFs
+    if not (vcfutils.is_gvcf_file(in_file) and variantcaller in ["gatk-haplotype", "haplotyper"]):
+        filters += ["QD < 2.0"]
+        filters += ["FS > 200.0"]
+        filters += ["SOR > 10.0"]
+        filters += _gatk_general()
+    return cutoff_w_expression(in_file, 'TYPE="indel" && (%s)' % " || ".join(filters), data, "GATKCutoffIndel",
+                               "INDEL", extra_cmd=r"""| sed 's/\\"//g'""")

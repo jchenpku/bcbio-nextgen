@@ -5,19 +5,31 @@ from bcbio.bam import callable
 from bcbio.srna import sample as srna
 from bcbio.srna import group as seqcluster
 from bcbio.chipseq import peaks
+from bcbio.wgbsseq import cpg_caller, deduplication, trimming
 from bcbio.cwl import create as cwl_create
-from bcbio.rnaseq import (sailfish, rapmap, salmon, umi, kallisto)
+from bcbio.cwl import cwlutils
+from bcbio.rnaseq import (sailfish, rapmap, salmon, umi, kallisto, spikein,
+                          bcbiornaseq)
 from bcbio.ngsalign import alignprep
-from bcbio.pipeline import (archive, disambiguate, qcsummary, region, sample,
+from bcbio.pipeline import (archive, alignment, disambiguate, qcsummary, region, sample,
                             main, shared, variation, run_info, rnaseq)
 from bcbio.qc import multiqc, qsignature
+from bcbio.structural import regions as svregions
 from bcbio.variation import (bamprep, genotype, ensemble,
-                             joint, multi, population, recalibrate, validate,
-                             vcfutils)
+                             joint, multi, population, validate,
+                             vcfutils, peddy)
+
+@utils.map_wrap
+def run_peddy(*args):
+    return peddy.run_peddy(*args)
 
 @utils.map_wrap
 def run_tagcount(*args):
     return umi.tagcount(*args)
+
+@utils.map_wrap
+def run_concatenate_sparse_counts(*args):
+    return umi.concatenate_sparse_counts(*args)
 
 @utils.map_wrap
 def run_filter_barcodes(*args):
@@ -32,8 +44,24 @@ def run_umi_transform(*args):
     return umi.umi_transform(*args)
 
 @utils.map_wrap
+def demultiplex_samples(*args):
+    return umi.demultiplex_samples(*args)
+
+@utils.map_wrap
 def run_kallisto_singlecell(*args):
     return kallisto.run_kallisto_singlecell(*args)
+
+@utils.map_wrap
+def run_kallisto_index(*args):
+    return kallisto.run_kallisto_index(*args)
+
+@utils.map_wrap
+def run_kallisto_rnaseq(*args):
+    return kallisto.run_kallisto_rnaseq(*args)
+
+@utils.map_wrap
+def run_salmon_decoy(*args):
+    return salmon.run_salmon_decoy(*args)
 
 @utils.map_wrap
 def run_salmon_reads(*args):
@@ -44,8 +72,28 @@ def run_salmon_bam(*args):
     return salmon.run_salmon_bam(*args)
 
 @utils.map_wrap
+def run_salmon_index(*args):
+    return salmon.run_salmon_index(*args)
+
+@utils.map_wrap
+def run_rapmap_index(*args):
+    return rapmap.run_rapmap_index(*args)
+
+@utils.map_wrap
+def run_counts_spikein(*args):
+    return spikein.run_counts_spikein(*args)
+
+@utils.map_wrap
+def run_bcbiornaseqload(*args):
+    return bcbiornaseq.make_bcbiornaseq_object(*args)
+
+@utils.map_wrap
 def run_sailfish(*args):
     return sailfish.run_sailfish(*args)
+
+@utils.map_wrap
+def run_sailfish_index(*args):
+    return sailfish.run_sailfish_index(*args)
 
 @utils.map_wrap
 def run_rapmap_align(*args):
@@ -68,8 +116,37 @@ def trim_srna_sample(*args):
     return srna.trim_srna_sample(*args)
 
 @utils.map_wrap
+def process_alignment_to_rec(*args):
+    return cwlutils.to_rec(*args)
+
+@utils.map_wrap
 def process_alignment(*args):
     return sample.process_alignment(*args)
+
+@utils.map_wrap
+def alignment_to_rec(*args):
+    default_keys = ["config__algorithm__align_split_size",
+                    "config__algorithm__aligner",
+                    "config__algorithm__mark_duplicates",
+                    "reference__bwa__indexes",
+                    "reference__snap__indexes",
+                    "reference__bowtie2__indexes",
+                    "reference__novoalign__indexes",
+                    "rgnames__pl", "rgnames__sample", "rgnames__pu",
+                    "rgnames__lane", "rgnames__rg", "rgnames__lb"]
+    return cwlutils.to_rec_single(*args, default_keys=default_keys)
+
+@utils.map_wrap
+def organize_noalign(*args):
+    return alignment.organize_noalign(args)
+
+@utils.map_wrap
+def postprocess_alignment_to_rec(*args):
+    default_keys = ["config__algorithm__coverage_interval", "config__algorithm__seq2c_bed_ready",
+                    "config__algorithm__coverage", "config__algorithm__coverage_merged",
+                    "config__algorithm__coverage_orig", "config__algorithm__variant_regions",
+                    "config__algorithm__variant_regions_merged", "config__algorithm__variant_regions_orig"]
+    return cwlutils.to_rec(*args, default_keys=default_keys)
 
 @utils.map_wrap
 def postprocess_alignment(*args):
@@ -78,6 +155,10 @@ def postprocess_alignment(*args):
 @utils.map_wrap
 def prep_samples(*args):
     return sample.prep_samples(*args)
+
+@utils.map_wrap
+def prep_samples_to_rec(*args):
+    return cwlutils.to_rec(*args)
 
 @utils.map_wrap
 def srna_annotation(*args):
@@ -98,6 +179,32 @@ def srna_alignment(*args):
 @utils.map_wrap
 def peakcalling(*args):
     return peaks.calling(*args)
+
+
+@utils.map_wrap
+def trim_bs_sample(*args):
+    return trimming.trim(*args)
+
+
+@utils.map_wrap
+def cpg_calling(*args):
+    return cpg_caller.calling(*args)
+
+
+@utils.map_wrap
+def cpg_processing(*args):
+    return cpg_caller.cpg_postprocessing(*args)
+
+
+@utils.map_wrap
+def cpg_stats(*args):
+    return cpg_caller.cpg_stats(*args)
+
+
+@utils.map_wrap
+def deduplicate_bismark(*args):
+    return deduplication.dedup_bismark(*args)
+
 
 @utils.map_wrap
 def prep_align_inputs(*args):
@@ -120,10 +227,6 @@ def piped_bamprep(*args):
     return bamprep.piped_bamprep(*args)
 
 @utils.map_wrap
-def prep_recal(*args):
-    return recalibrate.prep_recal(*args)
-
-@utils.map_wrap
 def split_variants_by_sample(*args):
     return multi.split_variants_by_sample(*args)
 
@@ -136,6 +239,10 @@ def pipeline_summary(*args):
     return qcsummary.pipeline_summary(*args)
 
 @utils.map_wrap
+def qc_to_rec(*args):
+    return qcsummary.qc_to_rec(*args)
+
+@utils.map_wrap
 def qsignature_summary(*args):
     return qsignature.summary(*args)
 
@@ -146,6 +253,10 @@ def multiqc_summary(*args):
 @utils.map_wrap
 def generate_transcript_counts(*args):
     return rnaseq.generate_transcript_counts(*args)
+
+@utils.map_wrap
+def detect_fusions(*args):
+    return rnaseq.detect_fusions(*args)
 
 @utils.map_wrap
 def rnaseq_quantitate(*args):
@@ -172,8 +283,8 @@ def run_rnaseq_variant_calling(*args):
     return rnaseq.run_rnaseq_variant_calling(*args)
 
 @utils.map_wrap
-def run_rnaseq_joint_genotyping(*args):
-    return rnaseq.run_rnaseq_joint_genotyping(*args)
+def run_rnaseq_ann_filter(*args):
+    return rnaseq.run_rnaseq_ann_filter(*args)
 
 @utils.map_wrap
 def combine_bam(*args):
@@ -197,7 +308,7 @@ def concat_batch_variantcalls(*args):
 
 @utils.map_wrap
 def get_parallel_regions(*args):
-    return region.get_parallel_regions(*args)
+    return region.get_parallel_regions_block(*args)
 
 @utils.map_wrap
 def variantcall_sample(*args):
@@ -216,8 +327,24 @@ def merge_variant_files(*args):
     return vcfutils.merge_variant_files(*args)
 
 @utils.map_wrap
+def hla_to_rec(*args):
+    return cwlutils.to_rec(*args)
+
+@utils.map_wrap
 def call_hla(*args):
     return hla.call_hla(*args)
+
+@utils.map_wrap
+def calculate_sv_bins(*args):
+    return svregions.calculate_sv_bins(*args)
+
+@utils.map_wrap
+def calculate_sv_coverage(*args):
+    return svregions.calculate_sv_coverage(*args)
+
+@utils.map_wrap
+def normalize_sv_coverage(*args):
+    return svregions.normalize_sv_coverage(*args)
 
 @utils.map_wrap
 def batch_for_sv(*args):
@@ -226,6 +353,10 @@ def batch_for_sv(*args):
 @utils.map_wrap
 def detect_sv(*args):
     return structural.detect_sv(*args)
+
+@utils.map_wrap
+def summarize_sv(*args):
+    return structural.summarize_sv(*args)
 
 @utils.map_wrap
 def validate_sv(*args):
@@ -244,6 +375,10 @@ def combine_calls(*args):
     return ensemble.combine_calls(*args)
 
 @utils.map_wrap
+def batch_for_ensemble(*args):
+    return ensemble.batch(*args)
+
+@utils.map_wrap
 def prep_gemini_db(*args):
     return population.prep_gemini_db(*args)
 
@@ -256,8 +391,8 @@ def compare_to_rm(*args):
     return validate.compare_to_rm(*args)
 
 @utils.map_wrap
-def summarize_grading_vc(*args):
-    return validate.summarize_grading(*args)
+def summarize_vc(*args):
+    return variation.summarize_vc(*args)
 
 @utils.map_wrap
 def run_disambiguate(*args):
@@ -282,6 +417,26 @@ def archive_to_cram(*args):
 @utils.map_wrap
 def square_batch_region(*args):
     return joint.square_batch_region(*args)
+
+@utils.map_wrap
+def batch_for_jointvc(*args):
+    return joint.batch_for_jointvc(*args)
+
+@utils.map_wrap
+def run_jointvc(*args):
+    return joint.run_jointvc(*args)
+
+@utils.map_wrap
+def finalize_jointvc(*args):
+    return joint.finalize_jointvc(*args)
+
+@utils.map_wrap
+def get_parallel_regions_jointvc(*args):
+    return region.get_parallel_regions(*args)
+
+@utils.map_wrap
+def concat_batch_variantcalls_jointvc(*args):
+    return joint.concat_batch_variantcalls_jointvc(*args)
 
 @utils.map_wrap
 def cufflinks_assemble(*args):

@@ -1,6 +1,8 @@
 Installation
 ------------
 
+.. _automated-install:
+
 Automated
 =========
 
@@ -8,22 +10,23 @@ We provide an automated script that installs third party analysis tools,
 required genome data and python library dependencies for running human variant
 and RNA-seq analysis, bundled into an isolated directory or virtual environment::
 
-     wget https://raw.github.com/chapmanb/bcbio-nextgen/master/scripts/bcbio_nextgen_install.py
+     wget https://raw.github.com/bcbio/bcbio-nextgen/master/scripts/bcbio_nextgen_install.py
      python bcbio_nextgen_install.py /usr/local/share/bcbio --tooldir=/usr/local \
        --genomes GRCh37 --aligners bwa --aligners bowtie2
 
 bcbio should install cleanly on Linux systems. For Mac OSX, we suggest
-trying `bcbio-vm <https://github.com/chapmanb/bcbio-nextgen-vm>`_ which runs
+trying `bcbio-vm <https://github.com/bcbio/bcbio-nextgen-vm>`_ which runs
 bcbio on :ref:`docs-cloud` or isolates all the third party tools inside a
 Docker container. bcbio-vm is still a work in progress but not all of the
 dependencies bcbio uses install cleanly on OSX.
 
 With the command line above, indexes and associated data files go in
-``/usr/local/share/bcbio-nextgen`` and tools are in ``/usr/local``. If you don't
-have write permissions to install into the ``/usr/local`` directories you can
-install in a user directory like ``~/local`` or use ``sudo chmod`` to give your
-standard user permissions. Please don't run the installer with sudo or as the
-root user.
+``/usr/local/share/bcbio-nextgen`` and tools are in ``/usr/local``. If you
+don't have write permissions to install into the ``/usr/local`` directories you
+can install in a user directory like ``~/local`` or use ``sudo chmod`` to give
+your standard user permissions. Please don't run the installer with sudo or as
+the root user.  Do not use directories with ``:`` in the name, it is not
+POSIX compliant and will cause installation failures.
 
 The installation is highly customizable, and you can install
 additional software and data later using ``bcbio_nextgen.py upgrade``.
@@ -47,19 +50,23 @@ bcbio:
 - The git version control system (http://git-scm.com/)
 - wget for file retrieval (https://www.gnu.org/software/wget/)
 
-Optional requirements:
+Optional tool specific requirements:
 
 - Java 1.7, needed when running GATK < 3.6 or MuTect. This must be available in
   your path so typing ``java -version`` resolves a 1.7 version. bcbio
   distributes Java 8 as part of the anaconda installation for recent versions of
-  GATK and MuTect2.
+  GATK and MuTect2. You can override the Java 8 installed with bcbio by setting
+  ``BCBIO_JAVA_HOME=/path/to/your/javadir`` if you have the java you want in
+  ``/path/to/your/javadir/bin/java``.
 - An OpenGL library, like `Mesa
   <http://mesa3d.sourceforge.net/>`_ (On Ubuntu/deb systems: ``libglu1-mesa``,
   On RedHat/rpm systems: ``mesa-libGLU-devel``). This is only required for
   cancer heterogeneity analysis with BubbleTree.
+- The Pisces tumor-only variant callers requires the `Microsoft .NET runtime
+  <https://www.microsoft.com/net/download/linux-package-manager/rhel/runtime-current>`_.
 
 The `bcbio-nextgen Dockerfile
-<https://github.com/chapmanb/bcbio-nextgen/blob/master/Dockerfile#L5>`_ contains
+<https://github.com/bcbio/bcbio-nextgen/blob/master/Dockerfile#L5>`_ contains
 the packages needed to install on bare Ubuntu systems.
 
 The automated installer creates a fully integrated environment that allows
@@ -69,11 +76,11 @@ evolve a consistent analysis environment as algorithms continue to evolve and
 improve. Installing this way is as isolated and self-contained as possible
 without virtual machines or lightweight system containers like `Docker`_. The
 :ref:`upgrade-install` section has additional documentation on including
-additional genome data, and the section on :ref:`toolplus-install` describes how
-to add commercially restricted software like GATK and MuTect. Following installation, you
-should edit the pre-created system configuration file in
-``/usr/local/share/bcbio-nextgen/galaxy/bcbio_system.yaml`` to match your local
-system or cluster configuration (see :ref:`tuning-cores`).
+additional genome data for supported bcbio genomes. For genome builds not
+included in the defaults, see the documentation on :ref:`config-custom`.
+Following installation, you should edit the pre-created system configuration
+file in ``/usr/local/share/bcbio-nextgen/galaxy/bcbio_system.yaml`` to match
+your local system or cluster configuration (see :ref:`tuning-cores`).
 
 .. _Docker: http://www.docker.io/
 
@@ -111,7 +118,7 @@ Tune the upgrade with these options:
 
 - Leave out the ``--tools`` option if you don't want to upgrade third party
   tools. If using ``--tools``, it will use the same directory as specified
-  during installation. If you're using an older version that has not yet went
+  during installation. If you're using an older version that has not yet gone
   through a successful upgrade or installation and saved the tool directory, you
   should manually specify ``--tooldir`` for the first upgrade. You can also pass
   ``--tooldir`` to install to a different directory.
@@ -119,13 +126,17 @@ Tune the upgrade with these options:
 - Leave out the ``--data`` option if you don't want to get any upgrades
   of associated genome data.
 
+- Some aligners such as STAR don't have pre-built indices due to the large file
+  sizes of these. You set the number of cores to use for indexing with
+  ``--cores 8``.
+
 .. _datatarget-install:
 
 Customizing data installation
 =============================
 
 bcbio installs associated data files for sequence processing, and you're able to
-customize this to installer larger files or change the defaults. Use the
+customize this to install larger files or change the defaults. Use the
 ``--datatarget`` flag (potentially multiple times) to customize or add new
 targets.
 
@@ -142,11 +153,11 @@ other analyses. The available targets are:
 - ``gemini`` -- The `GEMINI <http://gemini.readthedocs.org/>`_ framework
   associates publicly available metadata with called variants, and provides
   utilities for query and analysis. This target installs the required GEMINI
-  data files.
-- ``cadd`` -- `CADD <http://cadd.gs.washington.edu/home>`_ evaluates the
-  potential impact of variations. It is freely available for non-commercial
-  research, but requires licensing for commercial usage. The download is 30Gb and
-  GEMINI will include CADD annotations if present.
+  data files, including `ExAC <http://exac.broadinstitute.org/>`_.
+- ``gnomad`` -- `gnomAD <http://gnomad.broadinstitute.org/>`_ is a large scale
+  collection of genome variants, expanding on ExAC to include whole genome and
+  more exome inputs. This is a large 25Gb download, available for human genome
+  builds GRCh37, hg19 and hg38.
 - ``vep`` -- Data files for the `Variant Effects Predictor (VEP)
   <http://www.ensembl.org/info/docs/tools/vep/index.html>`_. To use VEP as an
   alternative to the default installed snpEff, set ``vep`` in the
@@ -154,13 +165,31 @@ other analyses. The available targets are:
 - ``dbnsfp`` Like CADD, `dbNSFP <https://sites.google.com/site/jpopgen/dbNSFP>`_
   provides integrated and generalized metrics from multiple sources to help with
   prioritizing variations for follow up. The files are large: dbNSFP is 10Gb,
-  expanding to 100Gb during preparation. VEP will use dbNSFP for annotation of
-  VCFs if included.
+  expanding to 100Gb during preparation.
+- ``dbscsnv`` `dbscSNV <https://sites.google.com/site/jpopgen/dbNSFP>`_
+  includes all potential human SNVs within splicing consensus regions
+  (−3 to +8 at the 5’ splice site and −12 to +2 at the 3’ splice site), i.e. scSNVs,
+  related functional annotations and two ensemble prediction scores for predicting their potential of altering splicing.
 - ``battenberg`` Data files for `Battenberg
   <https://github.com/cancerit/cgpBattenberg>`_, which detects subclonality and
   copy number changes in whole genome cancer samples.
 - ``kraken`` Database for `Kraken <https://ccb.jhu.edu/software/kraken/>`_,
   optionally used for contamination detection.
+- ``ericscript`` Database for `EricScript <https://sites.google.com/site/bioericscript/>`_,
+  based gene fusion detection. Supports hg38, hg19 and GRCh37.
+
+For somatic analyses, bcbio includes `COSMIC <http://cancer.sanger.ac.uk/cosmic>`_
+v68 for hg19 and GRCh37 only. Due to license restrictions, we cannot include
+updated versions of this dataset and hg38 support with the installer. To prepare
+these datasets yourself you can use `a utility script shipped with cloudbiolinux
+<https://github.com/chapmanb/cloudbiolinux/blob/master/utils/prepare_cosmic.py>`_
+that downloads, sorts and merges the VCFs, then copies into your bcbio installation::
+
+    export COSMIC_USER="your@registered.email.edu"
+    export COSMIC_PASS="cosmic_password"
+    bcbio_python prepare_cosmic.py 89 /path/to/bcbio
+
+``/path/to/bcbio/`` here is the directory one up from the ``genomes`` directory.
 
 .. _toolplus-install:
 
@@ -174,19 +203,18 @@ bcbio-nextgen during an upgrade with the ``--toolplus`` command line.
 GATK and MuTect/MuTect2
 ~~~~~~~~~~~~~~~~~~~~~~~
 
-Calling variants with GATK's HaplotypeCaller, MuTect2 or UnifiedGenotyper requires manual
-installation of the latest GATK release. This is freely available for academic
-users, but requires a `license for commerical use
+bcbio includes an installation of GATK4, which is freely available for all uses.
+This is the default runner for HaplotypeCaller or MuTect2. If you want to use an
+older version of GATK, it requires manual installation. This is freely available
+for academic users, but requires a `license for commercial use
 <https://www.broadinstitute.org/gatk/about/#licensing>`_. It is not freely
-redistributable so requires a manual download from the `GATK download`_ site. If
-you don't want to use the restricted GATK version, freely available callers like
-FreeBayes and VarDict provide a better alternative than using older GATK versions. See the
-`FreeBayes and GATK comparison`_ for a full evaluation.
+redistributable so requires a manual download from the `GATK download`_ site.
+You also need to include ``tools_off: [gatk4]`` in your configuration for runs:
+see :ref:`config-changing-defaults`.
 
-To install the most recent version of GATK, register with the pre-installed gatk
-bioconda wrapper::
+To install GATK3, register with the pre-installed gatk bioconda wrapper::
 
-   gatk-register /path/to/GenomeAnalysisTK.tar.bz2
+   gatk3-register /path/to/GenomeAnalysisTK.tar.bz2
 
 If you're not using the most recent post-3.6 version of GATK, or using a nightly
 build, you can add ``--noversioncheck`` to the command line to skip comparisons
@@ -194,7 +222,7 @@ to the GATK version.
 
 `MuTect2 <https://www.broadinstitute.org/gatk/guide/tooldocs/org_broadinstitute_gatk_tools_walkers_cancer_m2_MuTect2.php>`_ is distributed with GATK in versions 3.5 and later.
 
-To install older versions of GATK (< 3.6), download and unzip the latest version from
+To install versions of GATK < 3.6, download and unzip the latest version from
 the GATK distribution. Then make this jar available to bcbio-nextgen with::
 
     bcbio_nextgen.py upgrade --tools --toolplus gatk=/path/to/gatk/GenomeAnalysisTK.jar
@@ -202,7 +230,7 @@ the GATK distribution. Then make this jar available to bcbio-nextgen with::
 This will copy the jar and update your bcbio_system.yaml and manifest files to
 reflect the new version.
 
-MuTect also has similar licensing terms and requires a license for commerical
+MuTect also has similar licensing terms and requires a license for commercial
 use. After `downloading the MuTect jar
 <https://www.broadinstitute.org/gatk/download/>`_, make it available to bcbio::
 
@@ -212,7 +240,8 @@ Note that muTect does not provide an easy way to query for the current version,
 so your input jar needs to include the version in the name.
 
 .. _FreeBayes and GATK comparison: http://bcb.io/2013/10/21/updated-comparison-of-variant-detection-methods-ensemble-freebayes-and-minimal-bam-preparation-pipelines/
-.. _GATK download: http://www.broadinstitute.org/gatk/download
+.. _GATK download: https://software.broadinstitute.org/gatk/download/archive
+
 
 System requirements
 ===================
@@ -237,7 +266,6 @@ approximately 35Gb of storage during preparation and ~25Gb after::
     4.4G  vep
     23.5G total
 
-
 Troubleshooting
 ===============
 
@@ -252,14 +280,17 @@ use ``https://`` globally instead of ``git://``::
 
 GATK or Java Errors
 ~~~~~~~~~~~~~~~~~~~
-GATK and other software tools used by bcbio currently require Java 1.7. If you
-have a different version, you'll see errors like::
+Most software tools used by bcbio require Java 1.8. bcbio distributes an OpenJDK
+Java build and uses it so you don't need to install anything. Older versions of
+GATK (< 3.6) and MuTect require a locally installed Java 1.7. If you
+have version incompatibilities, you'll see errors like::
 
     Unsupported major.minor version 51.0
 
-To fix this make sure you have Java 1.7 first in your ``PATH`` and that
-``JAVA_HOME`` is either set to point to the same version, or not set.
-(``unset JAVA_HOME``).
+Fixing this requires either installing Java 1.7 for old GATK and MuTect or
+avoiding pointing to an incorrect java (``unset JAVA_HOME``). You can also tweak
+the java used by bcbio, described in the :ref:`automated-install` installation
+section.
 
 ImportErrors
 ~~~~~~~~~~~~
@@ -279,54 +310,6 @@ Finally, having a ``.pydistutils.cfg`` file in your home directory can mess with
 where the libraries get installed. If you have this file in your
 home directory, temporarily renaming it to something else may fix
 your installation issue.
-
-Old bcbio version support
-~~~~~~~~~~~~~~~~~~~~~~~~~
-
-The upgrade approach changed slightly as of 0.7.5 to be more
-consistent.  In earlier versions, to get a full upgrade leave out the
-``--data`` argument since that was the default. The best approach if
-you find the arguments are out of date is to do a ``bcbio_nextgen.py
-upgrade -u stable`` to get the latest version, then proceed
-again. Pre 0.7.0 versions won't have the ``upgrade`` command and need
-``bcbio_nextgen.py -u stable`` to get up to date.
-
-.. _private-install:
-
-local/private bcbio installation
-================================
-
-This is for if you have a previously installed version of bcbio-nextgen and you
-want to make changes to the code and test them without disrupting your
-installation.
-
-Install `Miniconda`_::
-
-  wget https://repo.continuum.io/miniconda/Miniconda-latest-Linux-x86_64.sh
-  bash Miniconda-latest-Linux-x86_64.sh
-
-With Miniconda installed create a (private) conda environment to be used for
-this bcbio installation::
-
-  conda create -n bcbio pip distribute
-
-The environment can then be switched on with `source activate bcbio` and off
-with `source deactivate`. Activate the environment and install bcbio within it::
-
-  source activate bcbio
-  conda install --yes -c bioconda bcbio-nextgen # This will install dependencies
-  git clone https://github.com/chapmanb/bcbio-nextgen.git
-  cd bcbio-nextgen
-  python setup.py install
-  ln -s path-to-bcbio/anaconda/bin/* path-to-bcbio/anaconda/envs/bioconda/bin/
-
-If you want to use a different (e.g., system-wide) bcbio installation for
-genomes, indices and the various tools point to that
-installation's `bcbio_system.yaml`, for example::
-
-  bcbio_nextgen.py /path-to-your-system-wide/bcbio_system.yaml ../config/NA12878-exome-methodcmp.yaml -n 16 ...
-
-.. _Miniconda: http://conda.pydata.org/miniconda.html
 
 Manual process
 ==============

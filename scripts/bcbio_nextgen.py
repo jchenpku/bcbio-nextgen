@@ -26,15 +26,18 @@ Usage:
      -s scheduler for ipython parallelization (lsf, sge, slurm, torque, pbspro)
      -q queue to submit jobs for ipython parallelization
 """
+from __future__ import print_function
 import os
 import argparse
 import sys
 
+from bcbio.setpath import prepend_bcbiopath
+prepend_bcbiopath()
+  
 from bcbio import install, utils, workflow
 from bcbio.illumina import machine
 from bcbio.distributed import runfn, clargs
 from bcbio.pipeline.main import run_main
-from bcbio.server import main as server_main
 from bcbio.graph import graph
 from bcbio.provenance import programs
 from bcbio.pipeline import version
@@ -48,7 +51,6 @@ def parse_cl_args(in_args):
     Returns the main config file and set of kwargs.
     """
     sub_cmds = {"upgrade": install.add_subparser,
-                "server": server_main.add_subparser,
                 "runfn": runfn.add_subparser,
                 "graph": graph.add_subparser,
                 "version": programs.add_subparser,
@@ -113,8 +115,12 @@ def parse_cl_args(in_args):
                             action="store_true")
         # Hidden arguments passed downstream
         parser.add_argument("--only-metadata", help=argparse.SUPPRESS, action="store_true", default=False)
+        parser.add_argument("--force-single", help="Treat all files as single reads",
+                            action="store_true", default=False)
+        parser.add_argument("--separators", help="comma separated list of separators that indicates paired files.",
+                            default="R,_,-,.")
     args = parser.parse_args(in_args)
-    if hasattr(args, "workdir"):
+    if hasattr(args, "workdir") and args.workdir:
         args.workdir = utils.safe_makedir(os.path.abspath(args.workdir))
     if hasattr(args, "global_config"):
         error_msg = _sanity_check_args(args)
@@ -165,6 +171,10 @@ def _add_inputs_to_kwargs(args, kwargs, parser):
     if kwargs.get("workflow", "") == "template":
         if args.only_metadata:
             inputs.append("--only-metadata")
+        if args.force_single:
+            inputs.append("--force-single")
+        if args.separators:
+            inputs.extend(["--separators", args.separators])
         kwargs["inputs"] = inputs
         return kwargs
     elif len(inputs) == 1:
@@ -188,10 +198,10 @@ def _add_inputs_to_kwargs(args, kwargs, parser):
     elif len(inputs) == 3:
         global_config, fc_dir, run_info_yaml = inputs
     elif args.version:
-        print version.__version__
+        print(version.__version__)
         sys.exit()
     else:
-        print "Incorrect input arguments", inputs
+        print("Incorrect input arguments", inputs)
         parser.print_help()
         sys.exit()
     if fc_dir:
@@ -203,14 +213,19 @@ def _add_inputs_to_kwargs(args, kwargs, parser):
     kwargs["config_file"] = global_config
     kwargs["fc_dir"] = fc_dir
     kwargs["run_info_yaml"] = run_info_yaml
+    print(f"Running bcbio version: {version.__version__}")
+    if global_config:
+        print(f"global config: {os.path.abspath(global_config)}")
+    if fc_dir:
+        print(f"flowcell directory: {os.path.abspath(fc_dir)}")
+    if run_info_yaml:
+        print(f"run info config: {os.path.abspath(run_info_yaml)}")
     return kwargs
 
 if __name__ == "__main__":
     kwargs = parse_cl_args(sys.argv[1:])
     if "upgrade" in kwargs and kwargs["upgrade"]:
         install.upgrade_bcbio(kwargs["args"])
-    elif "server" in kwargs and kwargs["server"]:
-        server_main.start(kwargs["args"])
     elif "runfn" in kwargs and kwargs["runfn"]:
         runfn.process(kwargs["args"])
     elif "graph" in kwargs and kwargs["graph"]:

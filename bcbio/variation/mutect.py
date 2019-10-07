@@ -12,7 +12,7 @@ from bcbio.heterogeneity import chromhacks
 from bcbio.pipeline import config_utils
 from bcbio.pipeline import datadict as dd
 from bcbio.pipeline.shared import subset_variant_regions
-from bcbio.variation import bamprep, bedutils, gatk, vcfutils, scalpel
+from bcbio.variation import bamprep, bedutils, vcfutils, scalpel
 from bcbio.variation.realign import has_aligned_reads
 from bcbio.variation.vcfutils import bgzip_and_index
 from bcbio.log import logger
@@ -54,7 +54,7 @@ def _config_params(base_config, assoc_files, region, out_file, items):
     if cosmic:
         params += ["--cosmic", cosmic]
     variant_regions = bedutils.population_variant_regions(items)
-    region = subset_variant_regions(variant_regions, region, out_file)
+    region = subset_variant_regions(variant_regions, region, out_file, items)
     if region:
         params += ["-L", bamprep.region_to_gatk(region), "--interval_set_rule",
                    "INTERSECTION"]
@@ -122,8 +122,9 @@ def mutect_caller(align_bams, items, ref_file, assoc_files, region=None,
                                    region, out_file_mutect)
         if (not isinstance(region, (list, tuple)) and
               not all(has_aligned_reads(x, region) for x in align_bams)):
-                vcfutils.write_empty_vcf(out_file)
-                return
+            paired = vcfutils.get_paired(items)
+            vcfutils.write_empty_vcf(out_file, samples=[x for x in (paired.tumor_name, paired.normal_name) if x])
+            return
         out_file_orig = "%s-orig%s" % utils.splitext_plus(out_file_mutect)
         if not file_exists(out_file_orig):
             with file_transaction(config, out_file_orig) as tx_out_file:

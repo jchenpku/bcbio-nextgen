@@ -5,6 +5,7 @@
 """
 from contextlib import closing
 from distutils.version import LooseVersion
+import getpass
 import re
 import sys
 import os
@@ -12,31 +13,34 @@ import subprocess
 
 import toolz as tz
 
-from bcbio import utils
+from bcbio import setpath, utils
 from bcbio.broad import picardrun
 from bcbio.distributed.transaction import tx_tmpdir
 from bcbio.pipeline import config_utils
+from bcbio.pipeline import datadict as dd
 from bcbio.provenance import do, programs
 
-def get_default_jvm_opts(tmp_dir=None):
+def get_default_jvm_opts(tmp_dir=None, parallel_gc=False):
     """Retrieve default JVM tuning options
 
     Avoids issues with multiple spun up Java processes running into out of memory errors.
     Parallel GC can use a lot of cores on big machines and primarily helps reduce task latency
     and responsiveness which are not needed for batch jobs.
-    https://github.com/chapmanb/bcbio-nextgen/issues/532#issuecomment-50989027
+    https://github.com/bcbio/bcbio-nextgen/issues/532#issuecomment-50989027
     https://wiki.csiro.au/pages/viewpage.action?pageId=545034311
     http://stackoverflow.com/questions/9738911/javas-serial-garbage-collector-performing-far-better-than-other-garbage-collect
+    However, serial GC causes issues with Spark local runs so we use parallel for those cases:
+    https://github.com/broadinstitute/gatk/issues/3605#issuecomment-332370070
     """
-    opts = ["-XX:+UseSerialGC"]
+    opts = ["-XX:+UseSerialGC"] if not parallel_gc else []
     if tmp_dir:
         opts.append("-Djava.io.tmpdir=%s" % tmp_dir)
     return opts
 
-def _get_gatk_opts(config, names, tmp_dir=None, memscale=None, include_gatk=True):
+def _get_gatk_opts(config, names, tmp_dir=None, memscale=None, include_gatk=True, parallel_gc=False):
     """Retrieve GATK memory specifications, moving down a list of potential specifications.
     """
-    if include_gatk:
+    if include_gatk and "gatk4" in dd.get_tools_off({"config": config}):
         opts = ["-U", "LENIENT_VCF_PROCESSING", "--read_filter",
                 "BadCigar", "--read_filter", "NotPrimaryAlignment"]
     else:
@@ -49,21 +53,18 @@ def _get_gatk_opts(config, names, tmp_dir=None, memscale=None, include_gatk=True
             break
     if memscale:
         jvm_opts = config_utils.adjust_opts(jvm_opts, {"algorithm": {"memory_adjust": memscale}})
-    jvm_opts += get_default_jvm_opts(tmp_dir)
+    jvm_opts += get_default_jvm_opts(tmp_dir, parallel_gc=parallel_gc)
     return jvm_opts + opts
 
-def get_gatk_framework_opts(config, tmp_dir=None, memscale=None, include_gatk=True):
-    return _get_gatk_opts(config, ["gatk-framework", "gatk"], tmp_dir, memscale, include_gatk=include_gatk)
-
-def get_gatk_opts(config, tmp_dir=None, memscale=None, include_gatk=True):
-    return _get_gatk_opts(config, ["gatk", "gatk-framework"], tmp_dir, memscale,
-                          include_gatk=include_gatk)
+def get_gatk_opts(config, tmp_dir=None, memscale=None, include_gatk=True, parallel_gc=False):
+    return _get_gatk_opts(config, ["gatk"], tmp_dir, memscale,
+                          include_gatk=include_gatk, parallel_gc=parallel_gc)
 
 def get_gatk_vqsr_opts(config, tmp_dir=None, memscale=None):
-    return _get_gatk_opts(config, ["gatk-vqsr", "gatk", "gatk-framework"], tmp_dir, memscale)
+    return _get_gatk_opts(config, ["gatk-vqsr", "gatk"], tmp_dir, memscale)
 
 def get_picard_opts(config, memscale=None):
-    return _get_gatk_opts(config, ["picard", "gatk", "gatk-framework"], memscale=memscale, include_gatk=False)
+    return _get_gatk_opts(config, ["picard", "gatk"], memscale=memscale, include_gatk=False)
 
 def _clean_java_out(version_str):
     """Remove extra environmental information reported in java when querying for versions.
@@ -86,23 +87,22 @@ def _check_for_bad_version(version, program):
                          "This often indicates you're not running the correct Java version:\n%s"
                          % (program, version))
 
-def get_gatk_version(gatk_jar=None):
+def get_gatk_version(gatk_jar=None, config=None):
     if gatk_jar:
         cl = " ".join(["java", "-Xms128m", "-Xmx256m"] + get_default_jvm_opts() + ["-jar", gatk_jar, "-version"])
     else:
-        cl = gatk_cmd("gatk", ["-Xms128m", "-Xmx256m"] + get_default_jvm_opts(), ["-version"])
+        cl = gatk_cmd("gatk", ["-Xms128m", "-Xmx256m"] + get_default_jvm_opts(), ["-version"], config=config)
     with closing(subprocess.Popen(cl, stdout=subprocess.PIPE,
                                   stderr=subprocess.STDOUT, shell=True).stdout) as stdout:
-        out = _clean_java_out(stdout.read().strip())
-        # versions earlier than 2.4 do not have explicit version command,
-        # parse from error output from GATK
-        if out.find("ERROR") >= 0:
-            flag = "The Genome Analysis Toolkit (GATK)"
-            for line in out.split("\n"):
-                if line.startswith(flag):
-                    version = line.split(flag)[-1].split(",")[0].strip()
-        else:
-            version = out
+        stdout = stdout.read().decode().strip()
+        out = _clean_java_out(stdout)
+        # Historical GATK version (2.4) and newer versions (4.1.0.0)
+        # have a flag in front of output version
+        version = out
+        flag = "The Genome Analysis Toolkit (GATK)"
+        for line in out.split("\n"):
+            if line.startswith(flag):
+                version = line.split(flag)[-1].split(",")[0].strip()
     if version.startswith("v"):
         version = version[1:]
     _check_for_bad_version(version, "GATK")
@@ -114,7 +114,8 @@ def get_mutect_version(mutect_jar):
     """
     cl = ["java", "-Xms128m", "-Xmx256m"] + get_default_jvm_opts() + ["-jar", mutect_jar, "-h"]
     with closing(subprocess.Popen(cl, stdout=subprocess.PIPE, stderr=subprocess.STDOUT).stdout) as stdout:
-        if "SomaticIndelDetector" in stdout.read().strip():
+        stdout = stdout.read().decode().strip()
+        if "SomaticIndelDetector" in stdout:
             mutect_type = "-appistry"
         else:
             mutect_type = ""
@@ -129,6 +130,33 @@ def get_mutect_version(mutect_jar):
     _check_for_bad_version(version, "MuTect")
     return version + mutect_type
 
+def fix_missing_spark_user(cl, prog, params):
+    """Adjust /etc/passwd and GATK parameters if current username missing.
+
+    Set Spark user to avoid lookup errors on environments like Docker where
+    we run as a user id that is not present in /etc/passwd
+
+    https://stackoverflow.com/questions/45198252/apache-spark-standalone-for-anonymous-uid-without-user-name/45361221#45361221
+    https://github.com/jaceklaskowski/mastering-apache-spark-book/blob/master/spark-sparkcontext-creating-instance-internals.adoc#-utilsgetcurrentusername
+    https://blog.openshift.com/jupyter-on-openshift-part-6-running-as-an-assigned-user-id/
+    """
+    if prog.find("Spark") >= 0 or "--spark-master" in params:
+        user = None
+        try:
+            user = getpass.getuser()
+        except KeyError:
+            if os.access("/etc/passwd", os.W_OK):
+                with open("/etc/passwd", "a") as out_handle:
+                    out_handle.write("sparkanon:x:{uid}:{uid}:sparkanon:/nonexistent:/usr/sbin/nologin\n"
+                                        .format(uid=os.getuid()))
+                try:
+                    user = getpass.getuser()
+                except KeyError:
+                    pass
+        if user:
+            cl = "export SPARK_USER=%s && " % (user) + cl
+    return cl
+
 class BroadRunner:
     """Simplify running Broad commandline tools.
     """
@@ -138,8 +166,8 @@ class BroadRunner:
         self._picard_ref = config_utils.expand_path(picard_ref)
         self._gatk_dir = config_utils.expand_path(gatk_dir) or config_utils.expand_path(picard_ref)
         self._config = config
-        self._gatk_version, self._picard_version, self._mutect_version = (
-            None, None, None)
+        self._gatk_version, self._gatk4_version, self._picard_version, self._mutect_version = (
+            None, None, None, None)
         self._gatk_resources = resources
 
     def _set_default_versions(self, config):
@@ -147,7 +175,7 @@ class BroadRunner:
         Starting up GATK takes a lot of resources so we do it once at start of analysis.
         """
         out = []
-        for name in ["gatk", "picard", "mutect"]:
+        for name in ["gatk", "gatk4", "picard", "mutect"]:
             v = tz.get_in(["resources", name, "version"], config)
             if not v:
                 try:
@@ -155,7 +183,7 @@ class BroadRunner:
                 except KeyError:
                     v = None
             out.append(v)
-        self._gatk_version, self._picard_version, self._mutect_version = out
+        self._gatk_version, self._gatk4_version, self._picard_version, self._mutect_version = out
 
     def new_resources(self, program):
         """Set new resource usage for the given program.
@@ -217,7 +245,7 @@ class BroadRunner:
         cl += ["--version"]
         p = subprocess.Popen(cl, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         # fix for issue #494
-        pat = re.compile('([\d|\.]*)(\(\d*\)$)')  # matches '1.96(1510)'
+        pat = re.compile(r'([\d|\.]*)(\(\d*\)$)')  # matches '1.96(1510)'
         m = pat.search(p.stdout.read())
         version = m.group(1)
         self._picard_version = version
@@ -226,11 +254,16 @@ class BroadRunner:
         return version
 
     def _has_gatk_conda_wrapper(self):
-        cmd = gatk_cmd("gatk", [], ["--version"])
+        cmd = gatk_cmd("gatk", [], ["--version"], config=self._config)
         if cmd:
-            with closing(subprocess.Popen(cmd, stdout=subprocess.PIPE,
-                                            stderr=subprocess.STDOUT, shell=True).stdout) as stdout:
-                return stdout.read().find("GATK jar file not found") == -1
+            if "gatk4" not in dd.get_tools_off({"config": self._config}):
+                return True
+            else:
+                try:
+                    stdout = subprocess.check_output(cmd, stderr=subprocess.STDOUT, shell=True, encoding="UTF-8")
+                    return stdout.find("GATK jar file not found") == -1
+                except subprocess.CalledProcessError:
+                    return False
 
     def has_gatk(self):
         if self._has_gatk_conda_wrapper():
@@ -239,7 +272,7 @@ class BroadRunner:
             jar = self._get_jar("GenomeAnalysisTK", ["GenomeAnalysisTKLite"], allow_missing=True)
             return jar is not None
 
-    def cl_gatk(self, params, tmp_dir, memscale=None):
+    def cl_gatk(self, params, tmp_dir, memscale=None, parallel_gc=False):
         support_nt = set()
         support_nct = set(["BaseRecalibrator"])
         if self._has_gatk_conda_wrapper():
@@ -250,36 +283,45 @@ class BroadRunner:
                 raise ValueError("GATK processing requested but gatk or older jar install not found: "
                                  "http://bcbio-nextgen.readthedocs.io/en/latest/contents/"
                                  "installation.html#gatk-and-mutect-mutect2")
+        is_gatk4 = "gatk4" not in dd.get_tools_off({"config": self._config})
         cores = self._config["algorithm"].get("num_cores", 1)
         config = self._config
+        atype_index = params.index("-T") if params.count("-T") > 0 \
+                        else params.index("--analysis_type")
+        prog = params[atype_index + 1]
+        # For GATK4 specify command first, so swap params to accomplish
+        if is_gatk4:
+            params = params[:]
+            del params[atype_index + 1]
+            del params[atype_index]
+            params = [prog] + params
         if cores and int(cores) > 1:
-            atype_index = params.index("-T") if params.count("-T") > 0 \
-                          else params.index("--analysis_type")
-            prog = params[atype_index + 1]
             if prog in support_nt:
                 params.extend(["-nt", str(cores)])
             elif prog in support_nct:
                 params.extend(["-nct", str(cores)])
                 memscale = config["algorithm"]["memory_adjust"] = {"direction": "increase",
                                                                    "magnitude": max(1, int(cores) // 2)}
-        if LooseVersion(self.gatk_major_version()) > LooseVersion("1.9"):
+        # Filters and unsafe specifications not in GATK4
+        if LooseVersion(self.gatk_major_version()) > LooseVersion("1.9") and not is_gatk4:
             if len([x for x in params if x.startswith(("-U", "--unsafe"))]) == 0:
                 params.extend(["-U", "LENIENT_VCF_PROCESSING"])
             params.extend(["--read_filter", "BadCigar", "--read_filter", "NotPrimaryAlignment"])
         if memscale:
-            jvm_opts = get_gatk_opts(config, tmp_dir=tmp_dir, memscale=memscale, include_gatk=False)
+            jvm_opts = get_gatk_opts(config, tmp_dir=tmp_dir, memscale=memscale, include_gatk=False,
+                                     parallel_gc=parallel_gc)
         else:
             # Decrease memory slightly from configuration to avoid memory allocation errors
             jvm_opts = config_utils.adjust_opts(self._jvm_opts,
                                                 {"algorithm": {"memory_adjust":
                                                                {"magnitude": 1.1, "direction": "decrease"}}})
-            jvm_opts += get_default_jvm_opts(tmp_dir)
+            jvm_opts += get_default_jvm_opts(tmp_dir, parallel_gc=parallel_gc)
         if "keyfile" in self._gatk_resources:
             params = ["-et", "NO_ET", "-K", self._gatk_resources["keyfile"]] + params
         if gatk_jar:
             return " ".join(["java"] + jvm_opts + ["-jar", gatk_jar] + [str(x) for x in params])
         else:
-            cmd = gatk_cmd("gatk", jvm_opts, params)
+            cmd = gatk_cmd("gatk", jvm_opts, params, config=self._config)
             if cmd:
                 return cmd
             else:
@@ -299,24 +341,39 @@ class BroadRunner:
                ["-jar", gatk_jar] + [str(x) for x in params]
 
     def run_gatk(self, params, tmp_dir=None, log_error=True,
-                 data=None, region=None, memscale=None):
+                 data=None, region=None, memscale=None, parallel_gc=False, ld_preload=False):
+        """Top level interface to running a GATK command.
+
+        ld_preload injects required libraries for Java JNI calls:
+        https://gatkforums.broadinstitute.org/gatk/discussion/8810/something-about-create-pon-workflow
+        """
+        needs_java7 = LooseVersion(self.get_gatk_version()) < LooseVersion("3.6")
+        # For old Java requirements use global java 7
+        if needs_java7:
+            setpath.remove_bcbiopath()
         with tx_tmpdir(self._config) as local_tmp_dir:
             if tmp_dir is None:
                 tmp_dir = local_tmp_dir
-            cl = self.cl_gatk(params, tmp_dir, memscale=memscale)
+            cl = self.cl_gatk(params, tmp_dir, memscale=memscale, parallel_gc=parallel_gc)
             atype_index = params.index("-T") if params.count("-T") > 0 \
                           else params.index("--analysis_type")
             prog = params[atype_index + 1]
+            cl = fix_missing_spark_user(cl, prog, params)
+            if ld_preload:
+                cl = "export LD_PRELOAD=%s/lib/libopenblas.so && %s" % (os.path.dirname(utils.get_bcbio_bin()), cl)
             do.run(cl, "GATK: {0}".format(prog), data, region=region,
                    log_error=log_error)
+        if needs_java7:
+            setpath.prepend_bcbiopath()
 
     def run_mutect(self, params, tmp_dir=None):
-        with tx_tmpdir(self._config) as local_tmp_dir:
-            if tmp_dir is None:
-                tmp_dir = local_tmp_dir
-            cl = self.cl_mutect(params, tmp_dir)
-            prog = "MuTect"
-            do.run(cl, "MuTect: {0}".format(prog), None)
+        with setpath.orig_paths():
+            with tx_tmpdir(self._config) as local_tmp_dir:
+                if tmp_dir is None:
+                    tmp_dir = local_tmp_dir
+                cl = self.cl_mutect(params, tmp_dir)
+                prog = "MuTect"
+                do.run(cl, "MuTect: {0}".format(prog), None)
 
     def get_gatk_version(self):
         """Retrieve GATK version, handling locally and config cached versions.
@@ -325,14 +382,21 @@ class BroadRunner:
         """
         if self._gatk_version is None:
             self._set_default_versions(self._config)
-        if self._gatk_version is not None:
+
+        if "gatk4" not in dd.get_tools_off({"config": self._config}):
+            # In cases whwere we don't have manifest versions. Not possible to get
+            # version from commandline with GATK4 alpha version
+            if self._gatk4_version is None:
+                self._gatk4_version = "4.0"
+            return self._gatk4_version
+        elif self._gatk_version is not None:
             return self._gatk_version
         else:
             if self._has_gatk_conda_wrapper():
                 gatk_jar = None
             else:
                 gatk_jar = self._get_jar("GenomeAnalysisTK", ["GenomeAnalysisTKLite"], allow_missing=True)
-            self._gatk_version = get_gatk_version(gatk_jar)
+            self._gatk_version = get_gatk_version(gatk_jar, config=self._config)
             return self._gatk_version
 
     def get_mutect_version(self):
@@ -348,7 +412,9 @@ class BroadRunner:
         Returns either `lite` (targeting GATK-lite 2.3.9) or `restricted`,
         the latest 2.4+ restricted version of GATK.
         """
-        if LooseVersion(self.gatk_major_version()) > LooseVersion("2.3"):
+        if LooseVersion(self.gatk_major_version()) > LooseVersion("3.9"):
+            return "gatk4"
+        elif LooseVersion(self.gatk_major_version()) > LooseVersion("2.3"):
             return "restricted"
         else:
             return "lite"
@@ -462,17 +528,35 @@ def runner_from_config_safe(config):
         else:
             raise
 
-def gatk_cmd(name, jvm_opts, params):
-    """Retrieve PATH to gatk or gatk-framework executable using locally installed java.
+
+def gatk_cmd(name, jvm_opts, params, config=None):
+    """Retrieve PATH to gatk using locally installed java.
     """
+    if name == "gatk":
+        if isinstance(config, dict) and "config" not in config:
+            data = {"config": config}
+        else:
+            data = config
+        if not data or "gatk4" not in dd.get_tools_off(data):
+            return _gatk4_cmd(jvm_opts, params, data)
+        else:
+            name = "gatk3"
     gatk_cmd = utils.which(os.path.join(os.path.dirname(os.path.realpath(sys.executable)), name))
     # if we can't find via the local executable, fallback to being in the path
     if not gatk_cmd:
         gatk_cmd = utils.which(name)
     if gatk_cmd:
-        return "unset JAVA_HOME && export PATH=%s:$PATH && %s %s %s" % \
-            (os.path.dirname(gatk_cmd), gatk_cmd,
-            " ".join(jvm_opts), " ".join([str(x) for x in params]))
+        return "%s && export PATH=%s:\"$PATH\" && %s %s %s" % \
+            (utils.clear_java_home(), utils.get_java_binpath(gatk_cmd), gatk_cmd,
+             " ".join(jvm_opts), " ".join([str(x) for x in params]))
+
+def _gatk4_cmd(jvm_opts, params, data):
+    """Retrieve unified command for GATK4, using 'gatk'. GATK3 is 'gatk3'.
+    """
+    gatk_cmd = utils.which(os.path.join(os.path.dirname(os.path.realpath(sys.executable)), "gatk"))
+    return "%s && export PATH=%s:\"$PATH\" && gatk --java-options '%s' %s" % \
+        (utils.clear_java_home(), utils.get_java_binpath(gatk_cmd),
+         " ".join(jvm_opts), " ".join([str(x) for x in params]))
 
 class PicardCmdRunner:
     def __init__(self, cmd, config):
@@ -481,11 +565,10 @@ class PicardCmdRunner:
 
     def run(self, subcmd, opts, memscale=None):
         jvm_opts = get_picard_opts(self._config, memscale=memscale)
-        Rpath = os.path.dirname(utils.Rscript_cmd())
-        cmd = ["unset", "JAVA_HOME", "&&", "export", "PATH=%s:$PATH" % Rpath, "&&"] + \
+        cmd = ["export", "PATH=%s:\"$PATH\"" % utils.get_java_binpath(), "&&"] + \
               [self._cmd] + jvm_opts + [subcmd] + ["%s=%s" % (x, y) for x, y in opts] + \
               ["VALIDATION_STRINGENCY=SILENT"]
-        do.run(" ".join(cmd), "Picard: %s" % subcmd)
+        do.run(utils.clear_java_home() + " && " + " ".join(cmd), "Picard: %s" % subcmd)
 
     def run_fn(self, name, *args, **kwds):
         """Run pre-built functionality that used Broad tools by name.

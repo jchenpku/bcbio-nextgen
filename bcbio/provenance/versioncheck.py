@@ -3,7 +3,7 @@
 from distutils.version import LooseVersion
 import subprocess
 
-from bcbio import broad, utils
+from bcbio import setpath, utils
 from bcbio.pipeline import config_utils
 from bcbio.pipeline import datadict as dd
 from bcbio.log import logger
@@ -17,7 +17,7 @@ def samtools(items):
     output, stderr = p.communicate()
     p.stdout.close()
     p.stderr.close()
-    if output.find("-@") == -1 and stderr.find("-@") == -1:
+    if str(output.decode()).find("-@") == -1 and str(stderr.decode()).find("-@") == -1:
         return ("Installed version of samtools sort does not have support for "
                 "multithreading (-@ option) "
                 "required to support bwa piped alignment and BAM merging. "
@@ -30,18 +30,29 @@ def _has_pipeline(items):
     return any(item.get("analysis", "") != "" for item in items)
 
 def _needs_java(data):
-    """Check if a caller needs external java for MuTect or older GATK 3.6.
+    """Check if a caller needs external java for MuTect.
+
+    No longer check for older GATK (<3.6) versions because of time cost; this
+    won't be relevant to most runs so we skip the sanity check.
     """
     vc = dd.get_variantcaller(data)
-    if not isinstance(vc, (list, tuple)):
+    if isinstance(vc, dict):
+        out = {}
+        for k, v in vc.items():
+            if not isinstance(v, (list, tuple)):
+                v = [v]
+            out[k] = v
+        vc = out
+    elif not isinstance(vc, (list, tuple)):
         vc = [vc]
-    if "mutect" in vc:
+    if "mutect" in vc or ("somatic" in vc and "mutect" in vc["somatic"]):
         return True
-    if "gatk" in vc or "gatk-haplotype" in vc:
-        runner = broad.runner_from_config(data["config"])
-        version = runner.get_gatk_version()
-        if LooseVersion(version) < LooseVersion("3.6"):
-            return True
+    if "gatk" in vc or "gatk-haplotype" in vc or ("germline" in vc and "gatk-haplotype" in vc["germline"]):
+        pass
+        # runner = broad.runner_from_config(data["config"])
+        # version = runner.get_gatk_version()
+        # if LooseVersion(version) < LooseVersion("3.6"):
+        #     return True
     return False
 
 def java(items):
@@ -50,15 +61,16 @@ def java(items):
     if any([_needs_java(d) for d in items]):
         min_version = "1.7"
         max_version = "1.8"
-        java = utils.which("java")
-        if not java:
-            return ("java not found on PATH. Java %s required for MuTect and GATK < 3.6." % min_version)
-        p = subprocess.Popen([java, "-Xms250m", "-Xmx250m", "-version"],
-                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        output, _ = p.communicate()
-        p.stdout.close()
+        with setpath.orig_paths():
+            java = utils.which("java")
+            if not java:
+                return ("java not found on PATH. Java %s required for MuTect and GATK < 3.6." % min_version)
+            p = subprocess.Popen([java, "-Xms250m", "-Xmx250m", "-version"],
+                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            output, _ = p.communicate()
+            p.stdout.close()
         version = ""
-        for line in output.split("\n"):
+        for line in output.decode().split("\n"):
             if line.startswith(("java version", "openjdk version")):
                 version = line.strip().split()[-1]
                 if version.startswith('"'):

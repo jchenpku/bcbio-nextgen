@@ -19,6 +19,8 @@ def classify_with_cpat(assembled_gtf, ref_gtf, ref_fasta, data):
     cpat_cmd = config_utils.get_program("cpat.py", data)
     if not cpat_cmd:
         return {}
+    if not gtf.is_cpat_compatible(ref_gtf):
+        return {}
     cutoff, hexamer, logit = get_coding_potential_cutoff(ref_gtf, ref_fasta, data)
     assembled_fasta = gtf.gtf_to_fasta(assembled_gtf, ref_fasta)
     cpat_fn = cpat(assembled_fasta, hexamer, logit, data)
@@ -40,8 +42,8 @@ def cpat(assembled_fasta, hexamer, logit, data, out_file=None):
     if not out_file:
         out_file = tempfile.NamedTemporaryFile(delete=False, suffix=".cpat").name
     cpat_cmd = config_utils.get_program("cpat.py", data)
-    r_setup = "unset R_HOME && export PATH=%s:$PATH && " % os.path.dirname(utils.Rscript_cmd())
-    cmd = ("{r_setup}{cpat_cmd} --gene={assembled_fasta} --hex={hexamer} "
+    r_setup = utils.get_R_exports()
+    cmd = ("{r_setup} && {cpat_cmd} --gene={assembled_fasta} --hex={hexamer} "
            "--logitModel={logit} --outfile={tx_out_file}")
     message = "Predicing coding potential of %s." % (assembled_fasta)
     with file_transaction(out_file) as tx_out_file:
@@ -50,12 +52,12 @@ def cpat(assembled_fasta, hexamer, logit, data, out_file=None):
 
 def load_cpat_coding_prob(cpat_file):
     with open(cpat_file) as in_handle:
-        header = in_handle.next()
+        header = next(in_handle)
         return {line.split()[0]: float(line.split()[5]) for line in in_handle}
 
 def load_cpat_orf_size(cpat_file):
     with open(cpat_file) as in_handle:
-        header = in_handle.next()
+        header = next(in_handle)
         return {line.split()[0]: float(line.split()[2]) for line in in_handle}
 
 def grade_cpat(coding_transcripts, noncoding_transcripts, cpat, cutoff):
@@ -93,8 +95,8 @@ def make_logit_model(coding_fasta, noncoding_fasta, hexamers, data, out_dir=None
     tx_prefix = tempfile.NamedTemporaryFile(delete=False).name
     tx_out_file = tx_prefix + ".logit.RData"
     logit_cmd = config_utils.get_program("make_logitModel.py", data)
-    r_setup = "unset R_HOME && export PATH=%s:$PATH && " % os.path.dirname(utils.Rscript_cmd())
-    cmd = ("{r_setup}{logit_cmd} --cgene={coding_fasta} --ngene={noncoding_fasta} "
+    r_setup = utils.get_R_exports()
+    cmd = ("{r_setup} && {logit_cmd} --cgene={coding_fasta} --ngene={noncoding_fasta} "
            "--hex={hexamers} --outfile={tx_prefix}")
     message = "Building coding/noncoding logistical model."
     do.run(cmd.format(**locals()), message)

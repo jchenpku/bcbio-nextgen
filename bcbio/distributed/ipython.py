@@ -23,7 +23,7 @@ except ImportError:
     except ImportError:
         msgpack = None
 
-from bcbio import utils
+from bcbio import utils, setpath
 from bcbio.log import logger, get_log_dir
 from bcbio.pipeline import config_utils
 from bcbio.provenance import diagnostics
@@ -52,7 +52,7 @@ def create(parallel, dirs, config):
             cores = parallel["num_jobs"] * parallel["cores_per_job"]
         else:
             cores = adj_cores
-            cores = per_machine_target_cores(cores, parallel["num_jobs"] // cores)
+            cores = per_machine_target_cores(cores, parallel["num_jobs"])
         parallel["resources"].append("mincores=%s" % cores)
     return ipython_cluster.cluster_view(parallel["scheduler"].lower(), parallel["queue"],
                                         parallel["num_jobs"], parallel["cores_per_job"],
@@ -71,9 +71,9 @@ def per_machine_target_cores(cores, num_jobs):
     number of machines. This gives up some cores to enable sharing cores with the controller
     and batch script on larger machines.
     """
-    if cores > 30:
+    if cores >= 32 and num_jobs == 1:
         cores = cores - 2
-    elif cores > 15 and num_jobs < 10:
+    elif cores >= 16 and num_jobs in [1, 2]:
         cores = cores - 1
     return cores
 
@@ -122,6 +122,7 @@ def runner(view, parallel, dirs, config):
     view provides map-style access to an existing Ipython cluster.
     """
     def run(fn_name, items):
+        setpath.prepend_bcbiopath()
         out = []
         fn, fn_name = (fn_name, fn_name.__name__) if callable(fn_name) else (_get_ipython_fn(fn_name, parallel), fn_name)
         items = [x for x in items if x is not None]

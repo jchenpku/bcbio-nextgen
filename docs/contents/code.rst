@@ -79,55 +79,80 @@ The most useful modules inside ``bcbio``, ordered by likely interest:
 - ``broad`` -- Code to handle calling Broad tools like GATK and
   Picard, as well as other Java-based programs.
 
-:ref:`code-devel-infrastructure`
 .. _code-devel-infrastructure:
 
 Development infrastructure
 ==========================
+
+GitHub
+~~~~~~
 
 bcbio-nextgen uses GitHub for code development, and we welcome
 pull requests. GitHub makes it easy to establish custom forks of the
 code and contribute those back. The Biopython documentation has great
 information on `using git and GitHub`_ for a community developed
 project. In short, make a fork of the `bcbio code
-<https://github.com/chapmanb/bcbio-nextgen>`_ by clicking the ``Fork`` button in
+<https://github.com/bcbio/bcbio-nextgen>`_ by clicking the ``Fork`` button in
 the upper right corner of the GitHub page, commit your changes to this custom
-fork and keep it up to date with the main bcbio repository as you develop, then
-click ``New Pull Request`` from your fork when you'd like to submit your changes
-for integration in bcbio.
+fork and keep it up to date with the main bcbio repository as you develop. The
+github help pages have detailed information on keeping your fork updated with
+the main github repository (e.g. https://help.github.com/articles/syncing-a-fork/).
+After commiting changes, click ``New Pull Request`` from your fork when you'd like
+to submit your changes for integration in bcbio.
 
-For developing and testing changes locally, you can install directly into a
-bcbio-nextgen installation. The automated bcbio-nextgen
-installer creates an isolated Python environment using `Anaconda`_. This will be
-a subdirectory of your installation root, like
-``/usr/local/share/bcbio-nextgen/anaconda``. The installer also includes a
-``bcbio_python`` executable target which is the python in this isolated anaconda
-directory. You generally will want to make changes to your local copy of the
-bcbio-nextgen code and then install these into the code directory.
+Creating a separate bcbio installation
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+When developing, you'd like to avoid breaking your production bcbio instance.
+Use the installer to create a separate bcbio instance without downloading any data.
+Before installing the second bcbio instance, investigate your PATH and PYTHONPATH
+variables. It is better to avoid mixing bcbio instances in the PATH. Also watch
+``~/.conda/environments.txt``.
+
+To install in ${HOME}/local/share/bcbio (your location might be different, 
+make sure you have ~30G of disk quota there)::
+
+    wget https://raw.github.com/chapmanb/bcbio-nextgen/master/scripts/bcbio_nextgen_install.py
+    python bcbio_nextgen_install.py ${HOME}/local/share/bcbio --tooldir=${HOME}/local --nodata --isolate
+
+Make soft links to the data from your production bcbio instance (your installation
+path could be different from /n/app/bcbio)::
+
+    ln -s /n/app/bcbio/biodata/genomes/ ${HOME}/local/share/genomes
+    ln -s /n/app/bcbio/biodata/galaxy/tool-data ${HOME}/local/share/bcbio/galaxy/tool-data
+
+Add this directory to your ``PATH`` (note that it is better to clear you PATH from
+the path of the production bcbio instance and its tools)::
+
+    echo $PATH
+    # use everything you need except of production bcbio
+    export PATH=/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin:
+    export PATH=${HOME}/local/share/bcbio/anaconda/bin:${HOME}/local/bin:$PATH
+
+Or directly call the testing bcbio: ``${HOME}/local/share/bcbio/anaconda/bin/bcbio_nextgen.py``.
+
+Injecting bcbio code into bcbio installation
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 To install from your bcbio-nextgen source tree for testing do::
 
+    # make sure you are using the development bcbio instance
+    which bcbio_python
+    # local git folder
+    cd ~/code/bcbio-nextgen
     bcbio_python setup.py install
 
 One tricky part that we don't yet know how to work around is that pip and
 standard ``setup.py install`` have different ideas about how to write Python
 eggs. ``setup.py install`` will create an isolated python egg directory like
-``bcbio_nextgen-0.7.5a-py2.7.egg``, while pip creates an egg pointing to a top
+``bcbio_nextgen-1.1.5-py3.6.egg``, while pip creates an egg pointing to a top
 level ``bcbio`` directory. Where this gets tricky is that the top level
 ``bcbio`` directory takes precedence. The best way to work around this problem
 is to manually remove the current pip installed bcbio-nextgen code (``rm -rf
-/path/to/anaconda/lib/python2.7/site-packages/bcbio*``) before managing it
+/path/to/anaconda/lib/python3.6/site-packages/bcbio*``) before managing it
 manually with ``bcbio_python setup.py install``. We'd welcome tips about ways to
 force consistent installation across methods.
 
-If you want to test with bcbio_nextgen code in a separate environment from your
-work directory, we recommend using the installer to install only
-the bcbio code into a separate directory::
-
-    python bcbio_nextgen_install.py /path/to/testbcbio --nodata --isolate
-
-Then add this directory to your ``PATH`` before your bcbio installation with the
-tools: ``export PATH=/path/to/testbcbio/anaconda/bin:$PATH``, or directly
-calling the testing bcbio ``/path/to/testbcbio/anaconda/bin/bcbio_nextgen.py``.
 
 .. _using git and GitHub: http://biopython.org/wiki/GitUsage
 .. _Anaconda: http://docs.continuum.io/anaconda/index.html
@@ -185,7 +210,7 @@ Other required implementation details include:
   useful for tools which aren't supported by a Galaxy .loc file but
   you can locate them relative to another index.
 
-.. _bwa.py: https://github.com/chapmanb/bcbio-nextgen/blob/master/bcbio/ngsalign/bwa.py
+.. _bwa.py: https://github.com/bcbio/bcbio-nextgen/blob/master/bcbio/ngsalign/bwa.py
 .. _Galaxy loc file: http://wiki.galaxyproject.org/Admin/Data%20Integration
 
 Once implemented, plug the aligner into the pipeline by defining it as
@@ -193,7 +218,7 @@ a ``_tool`` in `bcbio/pipeline/alignment.py`_. You can then use it as
 normal by specifying the name of the aligner in the `aligner` section
 of your configuration input.
 
-.. _bcbio/pipeline/alignment.py: https://github.com/chapmanb/bcbio-nextgen/blob/master/bcbio/pipeline/alignment.py
+.. _bcbio/pipeline/alignment.py: https://github.com/bcbio/bcbio-nextgen/blob/master/bcbio/pipeline/alignment.py
 
 Variant caller
 ~~~~~~~~~~~~~~
@@ -227,9 +252,9 @@ Once implemented, add the variant caller into the pipeline by updating
 `bcbio/variation/genotype.py`_. You can use it by specifying it in the
 ``variantcaller`` parameter of your sample configuration.
 
-.. _freebayes.py: https://github.com/chapmanb/bcbio-nextgen/blob/master/bcbio/variation/freebayes.py
-.. _bcbio/variation/genotype.py: https://github.com/chapmanb/bcbio-nextgen/blob/master/bcbio/variation/genotype.py#L548
-.. _bcbio/pipeline/shared.py: https://github.com/chapmanb/bcbio-nextgen/blob/master/bcbio/pipeline/shared.py#L176
+.. _freebayes.py: https://github.com/bcbio/bcbio-nextgen/blob/master/bcbio/variation/freebayes.py
+.. _bcbio/variation/genotype.py: https://github.com/bcbio/bcbio-nextgen/blob/master/bcbio/variation/genotype.py#L548
+.. _bcbio/pipeline/shared.py: https://github.com/bcbio/bcbio-nextgen/blob/master/bcbio/pipeline/shared.py#L176
 
 Adding new organisms
 ====================
@@ -276,15 +301,20 @@ happily integrate the new genome.
 This will provide basic integration with bcbio and allow running a minimal
 pipeline with alignment and quality control. We also have utility scripts in
 CloudBioLinux to help with preparing dbSNP (`utils/prepare_dbsnp.py`_)
-and RNA-seq (`utils/prepare_tx_gff.py`_) resources. We are still working on ways
-to best include these as part of the standard build and install since they
-either require additional tools to run locally, or require preparing copies in
-S3 buckets.
+and RNA-seq (`utils/prepare_tx_gff.py`_) resources for some genomes. For
+instance, to prepare RNA-seq transcripts for mm9::
+
+     bcbio_python prepare_tx_gff.py --genome-dir /path/to/bcbio/genomes Mmusculus mm9
+
+
+We are still working on ways to best include these as part of the standard build
+and install since they either require additional tools to run locally, or
+require preparing copies in S3 buckets.
 
 .. _config/biodata.yaml: https://github.com/chapmanb/cloudbiolinux/blob/master/config/biodata.yaml
 .. _cloudbio/biodata/genomes.py: https://github.com/chapmanb/cloudbiolinux/blob/7a2161a415d3dcd76f41095cd8f16bec84d4b1f3/cloudbio/biodata/genomes.py#L267
-.. _scripts/bcbio_nextgen_install.py: https://github.com/chapmanb/bcbio-nextgen/blob/8c93fe2dc4d2966e106a4b3edf5aa23550703481/scripts/bcbio_nextgen_install.py#L236
-.. _bcbio/install.py: https://github.com/chapmanb/bcbio-nextgen/blob/8c93fe2dc4d2966e106a4b3edf5aa23550703481/bcbio/install.py#L523
+.. _scripts/bcbio_nextgen_install.py: https://github.com/bcbio/bcbio-nextgen/blob/8c93fe2dc4d2966e106a4b3edf5aa23550703481/scripts/bcbio_nextgen_install.py#L236
+.. _bcbio/install.py: https://github.com/bcbio/bcbio-nextgen/blob/8c93fe2dc4d2966e106a4b3edf5aa23550703481/bcbio/install.py#L523
 .. _utils/prepare_dbsnp.py: https://github.com/chapmanb/cloudbiolinux/blob/master/utils/prepare_dbsnp.py
 .. _utils/prepare_tx_gff.py: https://github.com/chapmanb/cloudbiolinux/blob/master/utils/prepare_tx_gff.py
 
@@ -513,8 +543,8 @@ to distribute jobs and return results. The `multicore wrapper`_ and
 `ipython wrapper`_ are useful starting points for understanding the current
 implementations.
 
-.. _prun (parallel run): https://github.com/chapmanb/bcbio-nextgen/blob/master/bcbio/distributed/prun.py
-.. _pipeline.main: https://github.com/chapmanb/bcbio-nextgen/blob/master/bcbio/pipeline/main.py
-.. _ipython wrapper: https://github.com/chapmanb/bcbio-nextgen/blob/master/bcbio/distributed/ipython.py
-.. _multicore wrapper: https://github.com/chapmanb/bcbio-nextgen/blob/master/bcbio/distributed/multi.py
-.. _Travis-CI: https://travis-ci.org/chapmanb/bcbio-nextgen
+.. _prun (parallel run): https://github.com/bcbio/bcbio-nextgen/blob/master/bcbio/distributed/prun.py
+.. _pipeline.main: https://github.com/bcbio/bcbio-nextgen/blob/master/bcbio/pipeline/main.py
+.. _ipython wrapper: https://github.com/bcbio/bcbio-nextgen/blob/master/bcbio/distributed/ipython.py
+.. _multicore wrapper: https://github.com/bcbio/bcbio-nextgen/blob/master/bcbio/distributed/multi.py
+.. _Travis-CI: https://travis-ci.org/bcbio/bcbio-nextgen

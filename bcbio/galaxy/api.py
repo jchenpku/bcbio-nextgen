@@ -1,7 +1,6 @@
 """Access Galaxy NGLIMS functionality via the standard API.
 """
-import urllib
-import urllib2
+from six.moves import urllib
 import json
 import time
 
@@ -17,14 +16,14 @@ class GalaxyApiAccess:
         if not params:
             params = dict()
         params['key'] = self._key
-        vals = urllib.urlencode(params)
+        vals = urllib.parse.urlencode(params)
         return ("%s%s" % (self._base_url, rel_url), vals)
 
     def _get(self, url, params=None):
         url, params = self._make_url(url, params)
         num_tries = 0
         while 1:
-            response = urllib2.urlopen("%s?%s" % (url, params))
+            response = urllib.request.urlopen("%s?%s" % (url, params))
             try:
                 out = json.loads(response.read())
                 break
@@ -37,10 +36,10 @@ class GalaxyApiAccess:
 
     def _post(self, url, data, params=None, need_return=True):
         url, params = self._make_url(url, params)
-        request = urllib2.Request("%s?%s" % (url, params),
+        request = urllib.request.Request("%s?%s" % (url, params),
                 headers = {'Content-Type' : 'application/json'},
                 data = json.dumps(data))
-        response = urllib2.urlopen(request)
+        response = urllib.request.urlopen(request)
         try:
             data = json.loads(response.read())
         except ValueError:
@@ -57,7 +56,7 @@ class GalaxyApiAccess:
             details = self._get("/nglims/api_run_details", dict(run=run_bc))
         except ValueError:
             raise ValueError("Could not find information in Galaxy for run: %s" % run_bc)
-        if details.has_key("error") and run_date is not None:
+        if "error" in details and run_date is not None:
             try:
                 details = self._get("/nglims/api_run_details", dict(run=run_date))
             except ValueError:

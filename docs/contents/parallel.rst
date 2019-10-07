@@ -29,13 +29,14 @@ parallelizing different types of processes:
   this in the ``resource`` section of either a sample YAML file
   (:ref:`sample-resources`) or ``bcbio_system.yaml``. Ideally you specify this
   in the ``default`` section (along with memory usage). For example, this would
-  specify that processes using multiple cores can get up to 16 cores::
+  specify that processes using multiple cores can get up to 16 cores with 2G of
+  memory per core::
 
-    resources:
-      default:
-        memory: 2G
-        cores: 16
-        jvm_opts: ["-Xms750m", "-Xmx2000m"]
+      resources:
+        default:
+          memory: 2G
+          cores: 16
+          jvm_opts: ["-Xms750m", "-Xmx2000m"]
 
 bcbio uses these settings, along with memory requests, to determine how to
 partition jobs. For example, if you had ``-n 32`` and ``cores: 16`` for a run on
@@ -44,11 +45,14 @@ a single 32 core machine, this would run two simultaneous bwa mapping jobs using
 
 Memory specifications (both in ``memory`` and ``jvm_opts``) are per-core. bcbio
 takes care of adjusting this memory to match the cores used. In the example
-above, if bcbio was running a 16 core java proecess, it would use 32Gb of memory
+above, if bcbio was running a 16 core java process, it would use 32Gb of memory
 for the JVM, adjusting ``Xmx`` and ``Xms`` to match cores used. Internally bcbio
 looks at the memory and CPU usage on a machine and matches your configuration
 options to the available system resources. It will scale down core requests if
-memory is limiting, avoiding over-scheduling resources during the run.
+memory is limiting, avoiding over-scheduling resources during the run. You
+ideally want to set both ``memory`` and ``jvm_opts`` to match the average memory
+per core on the run machine and adjust upwards if this does not provide enough
+memory for some processes during the run.
 
 For single machine runs with a small number of samples, you generally want to
 set ``cores`` close to or equal the number of total cores you're allocating to
@@ -83,7 +87,7 @@ Run an analysis using ipython for parallel execution::
 
     bcbio_nextgen.py bcbio_sample.yaml -t ipython -n 12 -s lsf -q queue
 
-The ``-s`` flag specifies a type of scheduler to use ``(lsf, sge, torque, slurm)``.
+The ``-s`` flag specifies a type of scheduler to use ``(lsf, sge, torque, slurm, pbspro)``.
 
 The ``-q`` flag specifies the queue to submit jobs to.
 
@@ -124,24 +128,35 @@ instance. SLURM and Torque support specification of an account parameter with
 ``-r account=your_name``, which IPython transfers into ``-A``.
 
 SGE supports special parameters passed using resources to help handle the
-heterogeneity of possible setups. Specify the `SGE parallel environment`_ to use
-for submitting multicore jobs with ``-r pename=your_pe``. Since this setup is
-system specific it is hard to write general code for find a suitable
-environment. Specifically, when there are multiple usable parallel environments,
-it will select the first one which may not be correct. Manually specifying it
-with a ``pename=`` flag to resources will ensure correct selection of the right
-environment. To specify an advanced reservation with the ``-ar`` flag, use
-``-r ar=ar_id``. To specify an alternative memory management model instead of
-``mem_free`` use ``-r memtype=approach``. It is further recommended to configure
-``mem_free`` (or any other chosen memory management model) as a consumable, requestable
-resource in SGE to prevent overfilling hosts that do not have sufficient memory per slot.
-This can be done in two steps. First, launch ``qmon`` as an admin,
-select ``Complex Configuration`` in qmon, click on ``mem_free`,
-under the ``Consumable`` dialog select ``JOB`` (instead of ``YES`` or ``NO``) and
-finally click ``Modify`` for the changes to take effect. Secondly, for each host in
-the queue, configure ``mem_free`` as a complex value. If a host called ``myngshost``
-has 128GB of RAM, the corresponding command would be
-``qconf -mattr exechost complex_values mem_free=128G myngshost``
+heterogeneity of possible setups.
+
+Specify an `SGE parallel environment
+<https://docs.oracle.com/cd/E19957-01/820-0698/6ncdvjcmd/index.html>`_
+that supports using multiple cores on a
+single node with ``-r pename=your_pe``. Since this setup is system specific it
+is hard to write general code for find a suitable environment. Specifically,
+when there are multiple usable parallel environments, it will select the first
+one which may not be correct. Manually specifying it with a ``pename=`` flag to
+resources will ensure correct selection of the right environment. If you're
+administering a grid engine cluster and not sure how to set this up you'd
+typically want a ``smp`` queue using ``allocation_rule: $pe_slots`` like in this
+`example pename configuration
+<https://github.com/WGLab/biocluster/blob/431a05f6dfd532205aacfc7477ac740b0e7b2a0a/03%20System%20customization.md#setting-up-parallel-environment>`_
+or `smp template <https://gist.github.com/dan-blanchard/6586533#file-smp_template>`_.
+
+SGE has other specific flags you may want to tune, depending on your setup. To
+specify an advanced reservation with the ``-ar`` flag, use ``-r ar=ar_id``. To
+specify an alternative memory management model instead of ``mem_free`` use ``-r
+memtype=approach``. It is further recommended to configure ``mem_free`` (or any
+other chosen memory management model) as a consumable, requestable resource in
+SGE to prevent overfilling hosts that do not have sufficient memory per slot.
+This can be done in two steps. First, launch ``qmon`` as an admin, select
+``Complex Configuration`` in qmon, click on ``mem_free`, under the
+``Consumable`` dialog select ``JOB`` (instead of ``YES`` or ``NO``) and finally
+click ``Modify`` for the changes to take effect. Secondly, for each host in the
+queue, configure ``mem_free`` as a complex value. If a host called ``myngshost``
+has 128GB of RAM, the corresponding command would be ``qconf -mattr exechost
+complex_values mem_free=128G myngshost``
 
 There are also special ``-r`` resources parameters to support pipeline configuration:
 
@@ -167,7 +182,6 @@ There are also special ``-r`` resources parameters to support pipeline configura
 .. _Gluster: http://www.gluster.org/
 .. _Lustre: http://wiki.lustre.org/index.php/Main_Page
 .. _NFS: https://en.wikipedia.org/wiki/Network_File_System_%28protocol%29
-.. _SGE parallel environment: https://blogs.oracle.com/templedf/entry/configuring_a_new_parallel_environment
 
 Troubleshooting
 ~~~~~~~~~~~~~~~
@@ -202,7 +216,7 @@ underlying issue.
 No parallelization where expected
 =================================
 
-This may occure if the current execution is a re-run of a previous project:
+This may occur if the current execution is a re-run of a previous project:
 
 - Files in ``checkpoints_parallel/*.done`` tell bcbio not to parallelize already
   executed pipeline tasks. This makes restarts faster by avoiding re-starting a
@@ -256,8 +270,8 @@ thus bcbio-nextgen handles memory scheduling by:
   the available memory per core without getting out of memory system
   errors.
 
-- Passing total memory usage along to schedulers. The Torque, SGE and
-  SLURM schedulers use this information to allocate memory to
+- Passing total memory usage along to schedulers. The SLURM, SGE,
+  Torque and PBSPro schedulers use this information to allocate memory to
   processes, avoiding issues with other scheduled programs using
   available memory on a shared machine.
 
@@ -360,3 +374,15 @@ contribute your tips and thoughts.
 .. _post on scaling bcbio-nextgen: http://bcb.io/2013/05/22/scaling-variant-detection-pipelines-for-whole-genome-sequencing-analysis/
 .. _Harvard FAS Research Computing: http://rc.fas.harvard.edu/
 .. _Dell's Active Infrastructure for Life Sciences: http://dell.com/ai-hpc-lifesciences
+
+Spark
+=====
+Some GATK tools like recalibration use Apache Spark for parallelization. By default
+bcbio runs these with multicore parallelization on a single node, to fit in standard
+cluster and local compute environments. If you have a custom Spark cluster on your system
+you can use that for GATK by setting up the appropriate configuration in your
+:ref:`sample-resources`::
+
+    resources:
+        gatk-spark:
+            options: [--spark-master, 'spark://your-spark-cluster:6311']

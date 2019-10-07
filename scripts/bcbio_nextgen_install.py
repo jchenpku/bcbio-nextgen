@@ -22,10 +22,11 @@ except ImportError:
     import urllib.request as urllib_request
 
 REMOTES = {
-    "requirements": "https://raw.githubusercontent.com/chapmanb/bcbio-nextgen/master/requirements-conda.txt",
-    "gitrepo": "git://github.com/chapmanb/bcbio-nextgen.git",
-    "system_config": "https://raw.github.com/chapmanb/bcbio-nextgen/master/config/bcbio_system.yaml",
-    "anaconda": "https://repo.continuum.io/miniconda/Miniconda-latest-%s-x86_64.sh"}
+    "requirements": "https://raw.githubusercontent.com/bcbio/bcbio-nextgen/master/requirements-conda.txt",
+    "gitrepo": "https://github.com/bcbio/bcbio-nextgen.git",
+    "system_config": "https://raw.github.com/bcbio/bcbio-nextgen/master/config/bcbio_system.yaml",
+    "anaconda": "https://repo.continuum.io/miniconda/Miniconda3-latest-%s-x86_64.sh"}
+TARGETPY = "python=3.6"
 
 def main(args, sys_argv):
     check_arguments(args)
@@ -35,7 +36,7 @@ def main(args, sys_argv):
         print("Installing isolated base python installation")
         anaconda = install_anaconda_python(args)
         print("Installing bcbio-nextgen")
-        bcbio = install_conda_pkgs(anaconda)
+        bcbio = install_conda_pkgs(anaconda, args)
         bootstrap_bcbionextgen(anaconda, args)
     print("Installing data and third party dependencies")
     system_config = write_system_config(REMOTES["system_config"], args.datadir,
@@ -54,6 +55,8 @@ def _clean_args(sys_argv, args):
     """
     base = [x for x in sys_argv if
             x.startswith("-") or not args.datadir == os.path.abspath(os.path.expanduser(x))]
+    # Remove installer only options we don't pass on
+    base = [x for x in base if x not in set(["--minimize-disk"])]
     if "--nodata" in base:
         base.remove("--nodata")
     else:
@@ -62,14 +65,47 @@ def _clean_args(sys_argv, args):
 
 def bootstrap_bcbionextgen(anaconda, args):
     if args.upgrade == "development":
+        git_tag = "@%s" % args.revision if args.revision != "master" else ""
         subprocess.check_call([anaconda["pip"], "install", "--upgrade", "--no-deps",
-                               "git+%s#egg=bcbio-nextgen" % REMOTES["gitrepo"]])
+                               "git+%s%s#egg=bcbio-nextgen" % (REMOTES["gitrepo"], git_tag)])
 
-def install_conda_pkgs(anaconda):
+def _get_conda_channels(conda_bin):
+    """Retrieve default conda channels, checking if they are pre-specified in config.
+
+    This allows users to override defaults with specific mirrors in their .condarc
+    """
+    channels = ["bioconda", "conda-forge"]
+    out = []
+    try:
+        import yaml
+        config = yaml.safe_load(subprocess.check_output([conda_bin, "config", "--show"]))
+    except ImportError:
+        config = {}
+    for c in channels:
+        present = False
+        for orig_c in config.get("channels") or []:
+            if orig_c.endswith((c, "%s/" % c)):
+                present = True
+                break
+        if not present:
+            out += ["-c", c]
+    return out
+
+def install_conda_pkgs(anaconda, args):
+    env = dict(os.environ)
+    # Try to avoid user specific pkgs and envs directories
+    # https://github.com/conda/conda/issues/6748
+    env["CONDA_PKGS_DIRS"] = os.path.join(anaconda["dir"], "pkgs")
+    env["CONDA_ENVS_DIRS"] = os.path.join(anaconda["dir"], "envs")
     if not os.path.exists(os.path.basename(REMOTES["requirements"])):
         subprocess.check_call(["wget", "--no-check-certificate", REMOTES["requirements"]])
-    subprocess.check_call([anaconda["conda"], "install", "--quiet", "--yes", "-c", "bioconda",
-                           "--file", os.path.basename(REMOTES["requirements"])])
+    if args.minimize_disk:
+        subprocess.check_call([anaconda["conda"], "install", "--yes", "nomkl"], env=env)
+    channels = _get_conda_channels(anaconda["conda"])
+    subprocess.check_call([anaconda["conda"], "install", "--yes"] + channels +
+                          ["--only-deps", "bcbio-nextgen", TARGETPY], env=env)
+    subprocess.check_call([anaconda["conda"], "install", "--yes"] + channels +
+                          ["--file", os.path.basename(REMOTES["requirements"]), TARGETPY], env=env)
     return os.path.join(anaconda["dir"], "bin", "bcbio_nextgen.py")
 
 def _guess_distribution():
@@ -93,7 +129,7 @@ def install_anaconda_python(args):
         dist = args.distribution if args.distribution else _guess_distribution()
         url = REMOTES["anaconda"] % ("MacOSX" if dist.lower() == "macosx" else "Linux")
         if not os.path.exists(os.path.basename(url)):
-            subprocess.check_call(["wget", "--no-check-certificate", url])
+            subprocess.check_call(["wget", "--progress=dot:mega", "--no-check-certificate", url])
         subprocess.check_call("bash %s -b -p %s" %
                               (os.path.basename(url), anaconda_dir), shell=True)
     return {"conda": conda,
@@ -189,7 +225,7 @@ def _check_toolplus(x):
     """
     import argparse
     Tool = collections.namedtuple("Tool", ["name", "fname"])
-    std_choices = set(["data", "cadd", "dbnsfp"])
+    std_choices = set(["data", "dbnsfp", "ericscript"])
     if x in std_choices:
         return Tool(x, None)
     elif "=" in x and len(x.split("=")) == 2:
@@ -213,6 +249,8 @@ if __name__ == "__main__":
         description="Automatic installation for bcbio-nextgen pipelines")
     parser.add_argument("datadir", help="Directory to install genome data",
                         type=lambda x: (os.path.abspath(os.path.expanduser(x))))
+    parser.add_argument("--cores", default=1,
+                        help="Number of cores to use if local indexing is necessary.")
     parser.add_argument("--tooldir",
                         help="Directory to install 3rd party software tools. Leave unspecified for no tools",
                         type=lambda x: (os.path.abspath(os.path.expanduser(x))), default=None)
@@ -220,22 +258,27 @@ if __name__ == "__main__":
                         action="append", default=[], type=_check_toolplus)
     parser.add_argument("--datatarget", help="Data to install. Allows customization or install of extra data.",
                         action="append", default=[],
-                        choices=["variation", "rnaseq", "smallrna", "gemini", "cadd", "vep", "dbnsfp",
-                                 "battenberg", "kraken"])
+                        choices=["variation", "rnaseq", "smallrna", "gemini", "vep", "dbnsfp",
+                                 "battenberg", "kraken", "ericscript", "gnomad"])
     parser.add_argument("--genomes", help="Genomes to download",
                         action="append", default=[],
                         choices=["GRCh37", "hg19", "hg38", "hg38-noalt", "mm10", "mm9", "rn6", "rn5",
                                  "canFam3", "dm3", "galGal4", "phix", "pseudomonas_aeruginosa_ucbpp_pa14",
-                                 "sacCer3", "TAIR10", "WBcel235", "xenTro3", "GRCz10"])
+                                 "sacCer3", "TAIR10", "WBcel235", "xenTro3", "GRCz10", "GRCz11",
+                                 "Sscrofa11.1", "BDGP6"])
     parser.add_argument("--aligners", help="Aligner indexes to download",
                         action="append", default=[],
-                        choices=["bowtie", "bowtie2", "bwa", "novoalign", "rtg", "snap", "star", "ucsc", "hisat2"])
+                        choices=["bbmap", "bowtie", "bowtie2", "bwa", "minimap2", "novoalign", "rtg", "snap",
+                                 "star", "ucsc", "hisat2"])
     parser.add_argument("--nodata", help="Do not install data dependencies",
                         dest="install_data", action="store_false", default=True)
     parser.add_argument("--isolate", help="Created an isolated installation without PATH updates",
                         dest="isolate", action="store_true", default=False)
+    parser.add_argument("--minimize-disk", help="Try to minimize disk usage (no MKL extensions)",
+                        dest="minimize_disk", action="store_true", default=False)
     parser.add_argument("-u", "--upgrade", help="Code version to install",
                         choices=["stable", "development"], default="stable")
+    parser.add_argument("--revision", help="Specify a git commit hash or tag to install", default="master")
     parser.add_argument("--distribution", help="Operating system distribution",
                         default="",
                         choices=["ubuntu", "debian", "centos", "scientificlinux", "macosx"])

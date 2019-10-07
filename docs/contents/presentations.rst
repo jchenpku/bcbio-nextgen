@@ -1,6 +1,49 @@
 Presentations
 =============
 
+- Variant calling and bcbio training for the `Harvard Chan Bioinformatics Core
+  In Depth NGS Data Analysis Course
+  <https://hbctraining.github.io/In-depth-NGS-Data-Analysis-Course/>`_
+  (10 October 2018): `slides <https://github.com/chapmanb/bcbb/blob/master/talks/ngscourse2018_teaching/ngscourse2018_teaching.pdf>`_
+
+- Building a diverse set of validations; lightning talk at `the GCCBOSC2018 Bioinformatics Community Conference
+  <https://gccbosc2018.sched.com/>`_: `slides <https://github.com/chapmanb/bcbb/blob/master/talks/bosc2018_bcbio_validate/chapman_bcbio_validate.pdf>`_
+
+- bcbio training at `the GCCBOSC2018 Bioinformatics Community Conference
+  <https://gccbosc2018.sched.com/>`_, focusing on bcbio CWL integration with
+  examples of variant calling analyses on Personal Genome Project examples (26
+  June 2018): `slides
+  <https://github.com/chapmanb/bcbb/blob/master/talks/bosc2018_bcbio_training/bosc2018_bcbio_training.pdf>`_;;
+  `video <https://www.youtube.com/watch?v=ukWhAetvNKE>`_
+
+- Description of bcbio and Common Workflow integration with a focus on
+  parallelization strategies. From a bcbio discussion with `Peter Park's lab at Harvard Medical School
+  <https://compbio.hms.harvard.edu/index>`_ (26 January 2018): `slides <https://github.com/chapmanb/bcbb/blob/master/talks/park2018_bcbio/park2018_bcbio.pdf>`_
+
+- In depth description of bcbio and Common Workflow Language integration,
+  including motivation and practical examples of running on clusters, DNAnexus,
+  SevenBridges and Arvados. From the
+  `Boston Bioinformatics Interest Group meeting <https://gist.github.com/chapmanb/8ee026fd85d07518570ac5a0cd7239f5>`_
+  (2 November 2017):
+  `slides <https://github.com/chapmanb/bcbb/blob/master/talks/big2017_bcbio_cwl/big2017_bcbio_cwl.pdf>`_;
+  `video <https://youtu.be/nJEDS9Qol8M>`_
+
+- bcbio practical interoperability with the Common Workflow Language at
+  `BOSC 2017 <http://www.open-bio.org/wiki/BOSC_2017>`_
+  (22 July 2017):
+  `slides <https://github.com/chapmanb/bcbb/blob/master/talks/bosc2017_bcbio_interoperate/chapmanb_bcbio_interoperate.pdf>`_; 
+  `video <https://youtu.be/S7bu17GQHqk>`_
+
+- :ref:`teaching` variant calling, bcbio and GATK4 validation at the `Summer 2017 NGS Data Analysis Course
+  at Harvard Chan School <http://bioinformatics.sph.harvard.edu/training/>`_
+  (6 July 2017): `slides
+  <https://github.com/chapmanb/bcbb/blob/master/talks/ngscourse2017_teaching/ngscourse2017_teaching.pdf>`_
+
+- Training course for the `Cancer Genomics Cloud
+  <http://www.cancergenomicscloud.org/>`_, describing how bcbio uses the Common
+  Workflow Language to run in multiple infrastructures (1 May 2017): `slides
+  <https://github.com/chapmanb/bcbb/blob/master/talks/cgc2017_bcbio_cwl/cgc2017_bcbiocwl.pdf>`_
+
 - `MIT Bioinformatics Interest Group
   <http://openwetware.org/wiki/BioMicroCenter:BIG_meeting#2016-2017_academic_year>`_
   about how Common Workflow Language
@@ -10,7 +53,7 @@ Presentations
   and `video <https://youtu.be/375QSYmaidk>`_
 
 - `Broad Institute <http://www.broadinstitute.org/>`_ software engineering
-  seminar about bcbio validation and intergration with Common Workflow Language
+  seminar about bcbio validation and integration with Common Workflow Language
   and Workflow Definition Language (28 September 2016): `slides <https://github.com/chapmanb/bcbb/blob/master/talks/broad_engineering2016_bcbio/broad2016_bcbio.pdf>`_
 
 - Materials from :ref:`teaching` at the `Summer 2016 NGS Data Analysis Course

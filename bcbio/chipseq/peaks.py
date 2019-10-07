@@ -1,18 +1,21 @@
-"""High level parallel SNP and indel calling using multiple variant callers.
+"""High level parallel chip-seq analysis
 """
 import os
 import copy
+import toolz as tz
+
+import subprocess
 
 from bcbio.log import logger
-from bcbio import bam, utils
+from bcbio import utils
 from bcbio.pipeline import config_utils
 from bcbio.pipeline import datadict as dd
-from bcbio.chipseq import macs2
 from bcbio.provenance import do
 from bcbio.distributed.transaction import file_transaction
 
 
 def get_callers():
+    """Get functions related to each caller"""
     from bcbio.chipseq import macs2
     return {"macs2": macs2.run}
 
@@ -41,28 +44,19 @@ def peakcall_prepare(data, run_parallel):
 
 def calling(data):
     """Main function to parallelize peak calling."""
-    chip_bam = dd.get_work_bam(data)
+    chip_bam = data.get("work_bam")
     input_bam = data.get("work_bam_input", None)
     caller_fn = get_callers()[data["peak_fn"]]
     name = dd.get_sample_name(data)
-    out_dir = utils.safe_makedir(os.path.join(dd.get_work_dir(data), data["peak_fn"], name ))
-    # chip_bam = _prepare_bam(chip_bam, dd.get_variant_regions(data), data['config'])
-    # input_bam = _prepare_bam(input_bam, dd.get_variant_regions(data), data['config'])
-    out_file = caller_fn(name, chip_bam, input_bam, dd.get_genome_build(data), out_dir,
-                         dd.get_chip_method(data), data["config"])
-    data["peaks_file"] = out_file
+    out_dir = utils.safe_makedir(os.path.join(dd.get_work_dir(data), data["peak_fn"], name))
+    out_files = caller_fn(name, chip_bam, input_bam, dd.get_genome_build(data), out_dir,
+                          dd.get_chip_method(data), data["resources"], data)
+    greylistdir = greylisting(data)
+    data.update({"peaks_files": out_files})
+    # data["input_bam_filter"] = input_bam
+    if greylistdir:
+        data["greylist"] = greylistdir
     return [[data]]
-
-def _prepare_bam(bam_file, bed_file, config):
-    if not bam_file or not bed_file:
-        return bam_file
-    out_file = utils.append_stem(bam_file, '_filter')
-    samtools = config_utils.get_program("samtools", config)
-    if not utils.file_exists(out_file):
-        with file_transaction(out_file) as tx_out:
-            cmd = "{samtools} view -bh -L {bed_file} {bam_file} > {tx_out}"
-            do.run(cmd.format(**locals()), "Clean %s" % bam_file)
-    return out_file
 
 def _sync(original, processed):
     """
@@ -71,11 +65,12 @@ def _sync(original, processed):
     to consider multiple callers.
     """
     for original_sample in original:
-        original_sample[0]["peaks_file"] = []
-        for processs_sample in processed:
-            if dd.get_sample_name(original_sample[0]) == dd.get_sample_name(processs_sample[0]):
-                if utils.file_exists(processs_sample[0]["peaks_file"]):
-                    original_sample[0]["peaks_file"].append(processs_sample[0]["peaks_file"])
+        original_sample[0]["peaks_files"] = {}
+        for process_sample in processed:
+            if dd.get_sample_name(original_sample[0]) == dd.get_sample_name(process_sample[0]):
+                for key in ["peaks_files"]:
+                    if process_sample[0].get(key):
+                        original_sample[0][key] = process_sample[0][key]
     return original
 
 def _check(sample, data):
@@ -85,8 +80,8 @@ def _check(sample, data):
     if dd.get_phenotype(sample) == "input":
         return None
     for origin in data:
-        if  dd.get_batch(sample) in dd.get_batch(origin[0]) and dd.get_phenotype(origin[0]) == "input":
-            sample["work_bam_input"] = dd.get_work_bam(origin[0])
+        if dd.get_batch(sample) in (dd.get_batches(origin[0]) or []) and dd.get_phenotype(origin[0]) == "input":
+            sample["work_bam_input"] = origin[0].get("work_bam")
             return [sample]
     return [sample]
 
@@ -104,6 +99,36 @@ def _get_multiplier(samples):
         else:
             to_skip += 1.0
     mult = (to_process - to_skip) / len(samples)
-    if mult < 0:
-        mutl = 1 / len(samples)
-    return mult
+    if mult <= 0:
+        mult = 1 / len(samples)
+    return max(mult, 1)
+
+def greylisting(data):
+    """
+    Run ChIP-seq greylisting
+    """
+    input_bam = data.get("work_bam_input", None)
+    if not input_bam:
+        logger.info("No input BAM file detected, skipping greylisting.")
+        return None
+    try:
+        greylister = config_utils.get_program("chipseq-greylist", data)
+    except config_utils.CmdNotFound:
+        logger.info("No greylister found, skipping greylisting.")
+        return None
+    greylistdir = os.path.join(os.path.dirname(input_bam), "greylist")
+    if os.path.exists(greylistdir):
+        return greylistdir
+    cmd = "{greylister} --outdir {txgreylistdir} {input_bam}"
+    message = "Running greylisting on %s." % input_bam
+    with file_transaction(greylistdir) as txgreylistdir:
+        utils.safe_makedir(txgreylistdir)
+        try:
+            do.run(cmd.format(**locals()), message)
+        except subprocess.CalledProcessError as msg:
+            if str(msg).find("Cannot take a larger sample than population when 'replace=False'") >= 0:
+                logger.info("Skipping chipseq greylisting because of small sample size: %s"
+                            % dd.get_sample_name(data))
+                return None
+    return greylistdir
+

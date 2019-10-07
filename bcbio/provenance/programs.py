@@ -3,6 +3,7 @@
 Catalogs the full list of programs used in analysis, enabling reproduction of
 results and tracking of provenance in output files.
 """
+from __future__ import print_function
 import os
 import contextlib
 import subprocess
@@ -11,35 +12,36 @@ import yaml
 import toolz as tz
 
 from bcbio import utils
-from bcbio.pipeline import config_utils, version
+from bcbio.pipeline import config_utils
 from bcbio.pipeline import datadict as dd
 from bcbio.log import logger
 
 _cl_progs = [{"cmd": "bamtofastq", "name": "biobambam",
-              "args": "--version", "stdout_flag": "This is biobambam version"},
+              "args": "--version", "stdout_flag": "This is biobambam2 version"},
              {"cmd": "bamtools", "args": "--version", "stdout_flag": "bamtools"},
              {"cmd": "bcftools", "stdout_flag": "Version:"},
              {"cmd": "bedtools", "args": "--version", "stdout_flag": "bedtools"},
              {"cmd": "bowtie2", "args": "--version", "stdout_flag": "bowtie2-align version"},
              {"cmd": "bwa", "stdout_flag": "Version:"},
-             {"cmd": "chanjo"},
              {"cmd": "cutadapt", "args": "--version"},
              {"cmd": "fastqc", "args": "--version", "stdout_flag": "FastQC"},
              {"cmd": "freebayes", "stdout_flag": "version:"},
              {"cmd": "gemini", "args": "--version", "stdout_flag": "gemini "},
-             {"cmd": "novosort", "paren_flag": "novosort"},
+             {"cmd": "novosort", "args": "--version"}, 
              {"cmd": "novoalign", "stdout_flag": "Novoalign"},
              {"cmd": "samtools", "stdout_flag": "Version:"},
              {"cmd": "qualimap", "args": "-h", "stdout_flag": "QualiMap"},
+             {"cmd": "preseq", "stdout_flag": "preseq"},
              {"cmd": "vcflib", "has_cl_version": False},
-             {"cmd": "featurecounts", "args": "-v", "stdout_flag": "featureCounts"}]
-_manifest_progs = ["bcbio-variation", "bioconductor-bubbletree", "cufflinks",
-                   "cnvkit", "gatk-framework", "hisat2", "sailfish", "salmon",
-                   "grabix", "htseq", "lumpy-sv", "manta", "metasv", "mirdeep2", "oncofuse",
-                   "picard", "phylowgs", "platypus-variant",
-                   "rna-star", "rtg-tools", "sambamba", "samblaster", "scalpel",
-                   "seqbuster", "snpeff", "vardict",
-                   "vardict-java", "varscan", "variant-effect-predictor", "vt", "wham"]
+             {"cmd": "featureCounts", "args": "-v", "stdout_flag": "featureCounts"}]
+_manifest_progs = [
+    'bcbio-variation', 'bioconductor-bubbletree', 'cufflinks',
+    'cnvkit', 'fgbio', 'gatk4', 'hisat2', 'sailfish', 'salmon', 'grabix',
+    'htseq', 'lumpy-sv', 'manta', 'break-point-inspector', 'metasv', 'multiqc',
+    'seq2c', 'mirdeep2', 'oncofuse', 'picard', 'phylowgs', 'platypus-variant',
+    'rapmap', 'star', 'rtg-tools', 'sambamba', 'samblaster', 'scalpel',
+    'seqbuster', 'snpeff', 'vardict', 'vardict-java', 'varscan',
+    'ensembl-vep', 'vt', 'wham', 'umis']
 
 def _broad_versioner(type):
     def get_version(config):
@@ -53,9 +55,9 @@ def _broad_versioner(type):
         elif type == "mutect":
             try:
                 runner = broad.runner_from_config(config, "mutect")
+                return runner.get_mutect_version()
             except ValueError:
                 return ""
-            return runner.get_mutect_version()
         else:
             raise NotImplementedError(type)
     return get_version
@@ -97,14 +99,14 @@ _alt_progs = [{"name": "gatk", "version_fn": _broad_versioner("gatk")},
                "version_fn": _broad_versioner("mutect")}]
 
 def _parse_from_stdoutflag(stdout, x):
-    for line in stdout:
+    for line in (l.decode() for l in stdout):
         if line.find(x) >= 0:
             parts = [p for p in line[line.find(x) + len(x):].split() if p.strip()]
             return parts[0].strip()
     return ""
 
 def _parse_from_parenflag(stdout, x):
-    for line in stdout:
+    for line in (l.decode() for l in stdout):
         if line.find(x) >= 0:
             return line.split("(")[-1].split(")")[0]
     return ""
@@ -117,14 +119,12 @@ def _get_cl_version(p, config):
     try:
         prog = config_utils.get_program(p["cmd"], config)
     except config_utils.CmdNotFound:
-
         localpy_cmd = os.path.join(os.path.dirname(sys.executable), p["cmd"])
         if os.path.exists(localpy_cmd):
             prog = localpy_cmd
         else:
             return ""
     args = p.get("args", "")
-
     cmd = "{prog} {args}"
     subp = subprocess.Popen(cmd.format(**locals()), stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT,
@@ -135,56 +135,48 @@ def _get_cl_version(p, config):
         elif p.get("paren_flag"):
             v = _parse_from_parenflag(stdout, p["paren_flag"])
         else:
-            lines = [l.strip() for l in stdout.read().split("\n") if l.strip()]
+            lines = [l.strip() for l in stdout.read().decode().split("\n") if l.strip()]
             v = lines[-1]
     if v.endswith("."):
         v = v[:-1]
     return v
 
-def _get_brew_versions():
-    """Retrieve versions of tools installed via brew.
-    """
-    from bcbio import install
-    tooldir = install.get_defaults().get("tooldir")
-    brew_cmd = os.path.join(tooldir, "bin", "brew") if tooldir else "brew"
-    try:
-        vout = subprocess.check_output([brew_cmd, "list", "--versions"])
-    except OSError:  # brew not installed/used
-        vout = ""
-    out = {}
-    for vstr in vout.split("\n"):
-        if vstr.strip():
-            parts = vstr.rstrip().split()
-            name = parts[0]
-            v = parts[-1]
-            out[name] = v
-    return out
-
 def _get_versions(config=None):
     """Retrieve details on all programs available on the system.
     """
-    out = [{"program": "bcbio-nextgen",
-            "version": ("%s-%s" % (version.__version__, version.__git_revision__)
-                        if version.__git_revision__ else version.__version__)}]
+    try:
+        from bcbio.pipeline import version
+        if hasattr(version, "__version__"):
+            bcbio_version = ("%s-%s" % (version.__version__, version.__git_revision__)
+                             if version.__git_revision__ else version.__version__)
+        else:
+            bcbio_version = ""
+    except ImportError:
+        bcbio_version = ""
+    out = [{"program": "bcbio-nextgen", "version": bcbio_version}]
+    # get programs from the conda manifest, if available
     manifest_dir = _get_manifest_dir(config)
-    manifest_vs = _get_versions_manifest(manifest_dir)
+    manifest_vs = _get_versions_manifest(manifest_dir) if manifest_dir else []
     if manifest_vs:
         out += manifest_vs
-    else:
-        assert config is not None, "Need configuration to retrieve from non-manifest installs"
-        brew_vs = _get_brew_versions()
-        for p in _cl_progs:
+    programs = {x["program"] for x in out if x["version"]}
+    # get program versions from command line
+    for p in _cl_progs:
+        if p["cmd"] not in programs:
             out.append({"program": p["cmd"],
-                        "version": (brew_vs[p["cmd"]] if p["cmd"] in brew_vs else
-                                    _get_cl_version(p, config))})
-        for p in _alt_progs:
+                        "version": _get_cl_version(p, config)})
+            programs.add(p["cmd"])
+    for p in _alt_progs:
+        if p["name"] not in programs:
             out.append({"program": p["name"],
-                        "version": (brew_vs[p["name"]] if p["name"] in brew_vs else
-                                    p["version_fn"](config))})
+                        "version": (p["version_fn"](config))})
+            programs.add(p["name"])
     out.sort(key=lambda x: x["program"])
+    # remove entries with empty version strings
+    out = [x for x in out if x["version"]]
     return out
 
-def _get_manifest_dir(data=None):
+def _get_manifest_dir(data=None, name=None):
     """
     get manifest directory from the data dictionary, falling back on alternatives
     it prefers, in order:
@@ -207,6 +199,8 @@ def _get_manifest_dir(data=None):
                                                          "manifest"))
     if not manifest_dir or not os.path.exists(manifest_dir):
         manifest_dir = os.path.join(config_utils.get_base_installdir(), "manifest")
+        if not os.path.exists(manifest_dir) and name:
+            manifest_dir = os.path.join(config_utils.get_base_installdir(name), "manifest")
     return manifest_dir
 
 def _get_versions_manifest(manifest_dir):
@@ -218,6 +212,7 @@ def _get_versions_manifest(manifest_dir):
         for plist in ["toolplus", "python", "r", "debian", "custom"]:
             pkg_file = os.path.join(manifest_dir, "%s-packages.yaml" % plist)
             if os.path.exists(pkg_file):
+                logger.info(f"Retreiving program versions from {pkg_file}.")
                 with open(pkg_file) as in_handle:
                     pkg_info = yaml.safe_load(in_handle)
                 if not pkg_info:
@@ -251,14 +246,16 @@ def write_versions(dirs, config=None, is_wrapper=False):
     else:
         with open(out_file, "w") as out_handle:
             for p in _get_versions(config):
-                out_handle.write("{program},{version}\n".format(**p))
+                program = p["program"]
+                version = p["version"]
+                out_handle.write(f"{program},{version}\n")
     return out_file
 
 def get_version_manifest(name, data=None, required=False):
     """Retrieve a version from the currently installed manifest.
     """
-    manifest_dir = _get_manifest_dir(data)
-    manifest_vs = _get_versions_manifest(manifest_dir)
+    manifest_dir = _get_manifest_dir(data, name)
+    manifest_vs = _get_versions_manifest(manifest_dir) or []
     for x in manifest_vs:
         if x["program"] == name:
             v = x.get("version", "")
@@ -282,10 +279,11 @@ def get_version(name, dirs=None, config=None):
     if dirs:
         p = _get_program_file(dirs)
     else:
-        p = config["resources"]["program_versions"]
-    with open(p) as in_handle:
-        for line in in_handle:
-            prog, version = line.rstrip().split(",")
-            if prog == name and version:
-                return version
-    raise KeyError("Version information not found for %s in %s" % (name, p))
+        p = tz.get_in(["resources", "program_versions"], config)
+    if p:
+        with open(p) as in_handle:
+            for line in in_handle:
+                prog, version = line.rstrip().split(",")
+                if prog == name and version:
+                    return version
+        raise KeyError("Version information not found for %s in %s" % (name, p))

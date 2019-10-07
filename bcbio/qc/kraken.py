@@ -4,6 +4,7 @@ https://ccb.jhu.edu/software/kraken/
 """
 import os
 import shutil
+import toolz as tz
 
 from bcbio import bam, install, utils
 from bcbio.distributed.transaction import file_transaction, tx_tmpdir
@@ -12,15 +13,17 @@ from bcbio.provenance import do
 from bcbio.pipeline import datadict as dd
 from bcbio.pipeline import config_utils
 
-def run(bam_file, data, out_dir):
+def run(_, data, out_dir):
     """Run kraken, generating report in specified directory and parsing metrics.
        Using only first paired reads.
     """
     # logger.info("Number of aligned reads < than 0.60 in %s: %s" % (dd.get_sample_name(data), ratio))
     logger.info("Running kraken to determine contaminant: %s" % dd.get_sample_name(data))
-    ratio = bam.get_aligned_reads(bam_file, data)
+    # ratio = bam.get_aligned_reads(bam_file, data)
     out = out_stats = None
-    db = data['config']["algorithm"]["kraken"]
+    db = tz.get_in(["config", "algorithm", "kraken"], data)
+    if db and isinstance(db, (list, tuple)):
+        db = db[0]
     kraken_cmd = config_utils.get_program("kraken", data["config"])
     if db == "minikraken":
         db = os.path.join(install._get_data_dir(), "genomes", "kraken", "minikraken")
@@ -35,9 +38,9 @@ def run(bam_file, data, out_dir):
         num_cores = data["config"]["algorithm"].get("num_cores", 1)
         fn_file = data["files_orig"][0] if dd.get_save_diskspace(data) else data["files"][0]
         if fn_file.endswith("bam"):
-            logger.info("kraken: need fasta files as input")
+            logger.info("kraken: need fastq files as input")
             return {"kraken_report": "null"}
-        with tx_tmpdir(data, work_dir) as tx_tmp_dir:
+        with tx_tmpdir(data) as tx_tmp_dir:
             with utils.chdir(tx_tmp_dir):
                 out = os.path.join(tx_tmp_dir, "kraken_out")
                 out_stats = os.path.join(tx_tmp_dir, "kraken_stats")
@@ -45,7 +48,7 @@ def run(bam_file, data, out_dir):
                 cl = ("{cat} {fn_file} | {kraken_cmd} --db {db} --quick "
                       "--preload --min-hits 2 "
                       "--threads {num_cores} "
-                      "--out {out} --fastq-input /dev/stdin  2> {out_stats}").format(**locals())
+                      "--output {out} --fastq-input /dev/stdin  2> {out_stats}").format(**locals())
                 do.run(cl, "kraken: %s" % dd.get_sample_name(data))
                 if os.path.exists(out_dir):
                     shutil.rmtree(out_dir)

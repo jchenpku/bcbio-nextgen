@@ -6,6 +6,7 @@ differences.
 import collections
 import os
 
+from distutils.version import LooseVersion
 import numpy as np
 import pandas as pd
 
@@ -44,9 +45,12 @@ def classifyplot_from_valfile(val_file, outtype="png", title=None, size=None,
     grouped = df.groupby(["sample", "caller", "vtype"])
     df = grouped.apply(_calculate_fnr_fdr)
     df = df.reset_index()
-    out_file = "%s.%s" % (os.path.splitext(val_file)[0], outtype)
-    _do_classifyplot(df, out_file, title, size, samples, callers)
-    return [out_file]
+    if len(df) == 0:
+        return []
+    else:
+        out_file = "%s.%s" % (os.path.splitext(val_file)[0], outtype)
+        _do_classifyplot(df, out_file, title, size, samples, callers)
+        return [out_file]
 
 def _calculate_fnr_fdr(group):
     """Calculate the false negative rate (1 - sensitivity) and false discovery rate (1 - precision).
@@ -63,10 +67,11 @@ def _do_classifyplot(df, out_file, title=None, size=None, samples=None, callers=
     metric_labels = {"fdr": "False discovery rate",
                      "fnr": "False negative rate"}
     metrics = [("fnr", "tpr"), ("fdr", "spc")]
-    colors = ["light grey", "greyish"]
+    is_mpl2 = LooseVersion(mpl.__version__) >= LooseVersion('2.0')
+    colors = ["light grey", "greyish"] * 10
     data_dict = df.set_index(["sample", "caller", "vtype"]).T.to_dict()
     plt.ioff()
-    sns.set(style='white')
+    plt.style.use('seaborn-white')
     vtypes = sorted(df["vtype"].unique(), reverse=True)
     if not callers:
         callers = sorted(df["caller"].unique())
@@ -81,7 +86,6 @@ def _do_classifyplot(df, out_file, title=None, size=None, samples=None, callers=
     fig, axs = plt.subplots(len(vtypes) * len(groups), len(metrics))
     fig.text(.5, .95, title if title else "", horizontalalignment='center', size=14)
     for vi, vtype in enumerate(vtypes):
-        sns.set_palette(sns.xkcd_palette([colors[vi]]))
         for gi, group in enumerate(groups):
             for mi, (metric, label) in enumerate(metrics):
                 row_plots = axs if len(vtypes) * len(groups) == 1 else axs[vi * len(groups) + gi]
@@ -92,7 +96,7 @@ def _do_classifyplot(df, out_file, title=None, size=None, samples=None, callers=
                     if cur_data:
                         vals.append(cur_data[metric])
                         labels.append(cur_data[label])
-                cur_plot.barh(np.arange(len(vals)), vals)
+                cur_plot.barh(np.arange(len(vals)), vals, color=sns.xkcd_palette([colors[vi]]))
                 all_vals = []
                 for k, d in data_dict.items():
                     if k[-1] == vtype:
@@ -101,13 +105,17 @@ def _do_classifyplot(df, out_file, title=None, size=None, samples=None, callers=
                 metric_max = max(all_vals)
                 cur_plot.set_xlim(0, metric_max)
                 pad = 0.1 * metric_max
+                ai_adjust = 0.0 if is_mpl2 else 0.35
                 for ai, (val, label) in enumerate(zip(vals, labels)):
                     cur_plot.annotate(label, (pad + (0 if max(vals) > metric_max / 2.0 else max(vals)),
-                                              ai + 0.35), va='center', size=7)
-                cur_plot.locator_params(nbins=len(cats) + 2, axis="y", tight=True)
+                                              ai + ai_adjust),
+                                      va='center', size=7)
+                cur_plot.locator_params(nbins=len(cats) + (2 if len(cats) > 2 else 1), axis="y", tight=True)
                 if mi == 0:
                     cur_plot.tick_params(axis='y', which='major', labelsize=8)
-                    cur_plot.set_yticklabels(cats, size=8, va="bottom")
+                    plot_cats = ([""] + cats) if is_mpl2 else cats
+                    plot_va = "center" if is_mpl2 else "bottom"
+                    cur_plot.set_yticklabels(plot_cats, size=8, va=plot_va)
                     cur_plot.set_title("%s: %s" % (vtype, group), fontsize=12, loc="left")
                 else:
                     cur_plot.get_yaxis().set_ticks([])
@@ -338,7 +346,7 @@ def get_group_floors(df, cat_labels):
             group_maxes[stype].append(max(group["value"]))
         group_maxes[name].append(max(group["value"]))
     out = {}
-    for k, vs in group_maxes.iteritems():
+    for k, vs in group_maxes.items():
         if k in group_diffs:
             out[k] = max(max(group_diffs[stype]), min(vs))
         else:

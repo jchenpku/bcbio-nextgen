@@ -26,9 +26,10 @@ def run(items):
                         "--bam", dd.get_align_bam(data), "--outdir", work_dir]
     methods = []
     for call in data.get("sv", []):
-        if call["variantcaller"] in SUPPORTED and call["variantcaller"] not in methods:
+        vcf_file = call.get("vcf_file", call.get("vrn_file", None))
+        if call["variantcaller"] in SUPPORTED and call["variantcaller"] not in methods and vcf_file is not None:
             methods.append(call["variantcaller"])
-            cmd += ["--%s_vcf" % call["variantcaller"], call.get("vcf_file", call["vrn_file"])]
+            cmd += ["--%s_vcf" % call["variantcaller"], vcf_file]
     if len(methods) >= MIN_CALLERS:
         if not utils.file_exists(out_file):
             tx_work_dir = utils.safe_makedir(os.path.join(work_dir, "raw"))
@@ -43,8 +44,8 @@ def run(items):
                    "(NUM_SVTOOLS = 1 && ABS(SVLEN)<4000 && BA_FLANK_PERCENT>80) || "
                    "(NUM_SVTOOLS = 1 && ABS(SVLEN)<4000 && BA_NUM_GOOD_REC=0) || "
                    "(ABS(SVLEN)<4000 && BA_NUM_GOOD_REC>2)")
-        filter_file = vfilter.hard_w_expression(out_file, filters,
-                                                data, name="ReassemblyStats", limit_regions=None)
+        filter_file = vfilter.cutoff_w_expression(out_file, filters,
+                                                  data, name="ReassemblyStats", limit_regions=None)
         effects_vcf, _ = effects.add_to_vcf(filter_file, data, "snpeff")
         data["sv"].append({"variantcaller": "metasv",
                            "vrn_file": effects_vcf or filter_file})
@@ -55,4 +56,4 @@ def _sv_workdir(data):
                                            dd.get_sample_name(data), "metasv"))
 
 def _get_cmd():
-    return [sys.executable, os.path.join(os.path.dirname(sys.executable), "run_metasv.py")]
+    return [utils.get_program_python("run_metasv.py"), utils.which("run_metasv.py")]

@@ -5,8 +5,8 @@ https://sourceforge.net/p/adamajava/wiki/qSignature/
 import os
 import shutil
 import subprocess
+import xml.etree.ElementTree as ET
 
-import lxml
 import pysam
 import toolz as tz
 
@@ -117,6 +117,11 @@ def summary(*samples):
     else:
         return []
 
+def get_qsig_multiqc_files(*samples):
+    work_dir = samples[0][0]["dirs"]["work"]
+    qc_out_dir = utils.safe_makedir(os.path.join(work_dir, "qc", "qsignature"))
+    return [os.path.join(qc_out_dir, "qsignature.ma")]
+
 def _parse_qsignature_output(in_file, out_file, warning_file, data):
     """ Parse xml file produced by qsignature
 
@@ -138,7 +143,7 @@ def _parse_qsignature_output(in_file, out_file, warning_file, data):
             with file_transaction(data, warning_file) as warn_tx_file:
                 with open(out_tx_file, 'w') as out_handle:
                     with open(warn_tx_file, 'w') as warn_handle:
-                        et = lxml.etree.parse(in_handle)
+                        et = ET.parse(in_handle)
                         for i in list(et.iter('file')):
                             name[i.attrib['id']] = os.path.basename(i.attrib['name']).replace(".qsig.vcf", "")
                         for i in list(et.iter('comparison')):

@@ -3,10 +3,12 @@
 Required configurable variables in upload:
   dir
 """
+from __future__ import print_function
 import collections
 import os
 import shutil
 import time
+import warnings
 
 from bcbio import utils
 from bcbio.log import logger
@@ -15,8 +17,10 @@ from bcbio.pipeline import qcsummary
 
 # Avoid bioblend import errors, raising at time of use
 try:
-    import bioblend
-    from bioblend.galaxy import GalaxyInstance
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        import bioblend
+        from bioblend.galaxy import GalaxyInstance
     import simplejson
 except ImportError:
     GalaxyInstance, bioblend, simplejson = None, None, None
@@ -82,7 +86,7 @@ def _to_datalibrary_safe(fname, gi, folder_name, sample_info, config):
             num_tries += 1
             if num_tries > max_tries:
                 raise
-            print "Retrying upload, failed with:", str(e)
+            print("Retrying upload, failed with:", str(e))
             time.sleep(5)
 
 def _to_datalibrary(fname, gi, folder_name, sample_info, config):

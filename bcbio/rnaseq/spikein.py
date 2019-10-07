@@ -1,6 +1,5 @@
 """Function to counts on the fly the spike in sequences given as a parameter in the yaml file"""
 import os
-import sys
 import pandas as pd
 
 # from bcbio.rnaseq import sailfish
@@ -11,8 +10,12 @@ from bcbio.distributed.transaction import file_transaction
 from bcbio.provenance import do
 from bcbio.pipeline import config_utils
 from bcbio.rnaseq import sailfish
+from bcbio.bam import fastq
 from bcbio.log import logger
 # from bcbio import bam
+
+def run_counts_spikein(data):
+    return [[counts_spikein(data)]]
 
 def counts_spikein(data):
     data = utils.to_single_data(data)
@@ -28,8 +31,13 @@ def counts_spikein(data):
     else:
         fq1, fq2 = files[0], None
     assert file_exists(fasta_file), "%s was not found, exiting." % fasta_file
-    kmer = 31 if not dd.get_analysis(data).lower() == "smallrna-seq" else 15
-    fasta_index = _index_spikein(fasta_file, salmon_dir, data, kmer)
+    readlength = fastq.estimate_read_length(fq1)
+    if readlength % 2 == 0:
+        readlength -= 1
+    kmersize = min(readlength, 31)
+    logger.info("kmersize used for salmon index at spikein quant: %s" % kmersize)
+    kmersize = kmersize if not dd.get_analysis(data).lower() == "smallrna-seq" else 15
+    fasta_index = _index_spikein(fasta_file, salmon_dir, data, kmersize)
     out_file = _salmon_quant_reads(fq1, fq2, salmon_dir, fasta_index, data)
     data = dd.set_spikein_counts(data, out_file)
     return data
@@ -44,7 +52,7 @@ def _salmon_quant_reads(fq1, fq2, salmon_dir, index, data):
     num_cores = dd.get_num_cores(data)
     salmon = config_utils.get_program("salmon", dd.get_config(data))
     num_cores = dd.get_num_cores(data)
-    cmd = ("{salmon} quant -l A -i {index} -p {num_cores} "
+    cmd = ("{salmon} quant --validateMappings -l A -i {index} -p {num_cores} "
            "-o {tx_out_dir} ")
     fq1_cmd = "<(cat {fq1})" if not is_gzipped(fq1) else "<(gzip -cd {fq1})"
     fq1_cmd = fq1_cmd.format(fq1=fq1)

@@ -19,10 +19,11 @@ resources:
     memory: 3G
     cores: 16
     jvm_opts: ["-Xms750m", "-Xmx3500m"]
-  gatk:
-    jvm_opts: ["-Xms500m", "-Xmx3500m"]
+  # Can also set program specific options
+  # gatk:
+  #   jvm_opts: ["-Xms500m", "-Xmx3500m"]
   snpeff:
-    jvm_opts: ["-Xms750m", "-Xmx6g"]
+    jvm_opts: ["-Xms750m", "-Xmx3g"]
   qualimap:
     memory: 4g
   express:
@@ -37,6 +38,7 @@ resources:
 # Location of galaxy configuration file, which has pointers to reference data
 # https://bcbio-nextgen.readthedocs.org/en/latest/contents/configuration.html#reference-genome-files
 galaxy_config: universe_wsgi.ini
+
 
 # -- Additional options for specific integration, not required for standalone usage.
 

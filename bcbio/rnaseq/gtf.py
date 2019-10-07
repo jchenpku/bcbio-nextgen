@@ -2,8 +2,10 @@ import gffutils
 import tempfile
 import os
 import random
-import gzip
-from bcbio.utils import file_exists
+import re
+
+from bcbio import utils
+from bcbio.utils import file_exists, open_gzipsafe
 from bcbio.distributed.transaction import file_transaction
 from bcbio.provenance import do
 from bcbio.log import logger
@@ -18,7 +20,7 @@ def guess_infer_extent(gtf_file):
     tmp_out = tempfile.NamedTemporaryFile(suffix=".gtf", delete=False).name
     with open(tmp_out, "w") as out_handle:
         count = 0
-        in_handle = open(gtf_file) if ext != ".gz" else gzip.open(gtf_file)
+        in_handle = utils.open_gzipsafe(gtf_file)
         for line in in_handle:
             if count > 1000:
                 break
@@ -35,16 +37,20 @@ def guess_infer_extent(gtf_file):
 
 def get_gtf_db(gtf, in_memory=False):
     """
-    create a gffutils DB
+    create a gffutils DB, in memory if we don't have write permissions
     """
     db_file = gtf + ".db"
     if file_exists(db_file):
         return gffutils.FeatureDB(db_file)
+    if not os.access(os.path.dirname(db_file), os.W_OK | os.X_OK):
+        in_memory = True
     db_file = ":memory:" if in_memory else db_file
     if in_memory or not file_exists(db_file):
         infer_extent = guess_infer_extent(gtf)
+        disable_extent = not infer_extent
         db = gffutils.create_db(gtf, dbfn=db_file,
-                                infer_gene_extent=infer_extent)
+                                disable_infer_genes=disable_extent,
+                                disable_infer_transcripts=disable_extent)
     if in_memory:
         return db
     else:
@@ -62,7 +68,7 @@ def gtf_to_bed(gtf, alt_out_dir=None):
         if not alt_out_dir:
             raise IOError("Cannot write transcript BED output file %s" % out_file)
         else:
-            out_file = os.path.join(alt_out_dir, os.path.basename(out_file))
+            out_file = os.path.join(utils.safe_makedir(alt_out_dir), os.path.basename(out_file))
     if file_exists(out_file):
         return out_file
     with open(out_file, "w") as out_handle:
@@ -183,7 +189,7 @@ def split_gtf(gtf, sample_size=None, out_dir=None):
     if not sample_size or (sample_size and sample_size > len(gene_ids)):
         sample_size = len(gene_ids)
     gene_ids = set(random.sample(gene_ids, sample_size))
-    part1_ids = set(random.sample(gene_ids, sample_size / 2))
+    part1_ids = set(random.sample(gene_ids, sample_size // 2))
     part2_ids = gene_ids.difference(part1_ids)
     with open(part1, "w") as part1_handle:
         for gene in part1_ids:
@@ -239,15 +245,19 @@ def get_rRNA(gtf):
     extract rRNA genes and transcripts from a gtf file
     """
     rRNA_biotypes = ["rRNA", "Mt_rRNA", "tRNA", "MT_tRNA"]
-    db = get_gtf_db(gtf)
-    biotype_lookup = _biotype_lookup_fn(gtf)
-    features = []
-    if not biotype_lookup:
-        return None
-    for feature in db.features_of_type("transcript"):
-        biotype = biotype_lookup(feature)
-        if biotype in rRNA_biotypes:
-            features.append((feature['gene_id'][0], feature['transcript_id'][0]))
+    features = set()
+    with open_gzipsafe(gtf) as in_handle:
+        for line in in_handle:
+            if not "gene_id" in line or not "transcript_id" in line:
+                continue
+            if any(x in line for x in rRNA_biotypes):
+                geneid = line.split("gene_id")[1].split(" ")[1]
+                geneid = _strip_non_alphanumeric(geneid)
+                geneid = _strip_feature_version(geneid)
+                txid = line.split("transcript_id")[1].split(" ")[1]
+                txid = _strip_non_alphanumeric(txid)
+                txid = _strip_feature_version(txid)
+                features.add((geneid, txid))
     return features
 
 def _biotype_lookup_fn(gtf):
@@ -271,32 +281,72 @@ def _biotype_lookup_fn(gtf):
     else:
         return None
 
-def tx2genefile(gtf, out_file=None):
+def tx2genedict(gtf, keep_version=False):
+    """
+    produce a tx2gene dictionary from a GTF file
+    """
+    d = {}
+    with open_gzipsafe(gtf) as in_handle:
+        for line in in_handle:
+            if "gene_id" not in line or "transcript_id" not in line:
+                continue
+            geneid = line.split("gene_id")[1].split(" ")[1]
+            geneid = _strip_non_alphanumeric(geneid)
+            if not geneid:
+                continue
+            txid = line.split("transcript_id")[1].split(" ")[1]
+            txid = _strip_non_alphanumeric(txid)
+            if keep_version and "transcript_version" in line:
+                txversion = line.split("transcript_version")[1].split(" ")[1]
+                txversion = _strip_non_alphanumeric(txversion)
+                txid  += "." + txversion
+            if has_transcript_version(line) and not keep_version:
+                txid = _strip_feature_version(txid)
+                geneid = _strip_feature_version(geneid)
+            d[txid] = geneid
+    return d
+
+def _strip_feature_version(featureid):
+    """
+    some feature versions are encoded as featureid.version, this strips those off, if they exist
+    """
+    version_detector = re.compile(r"(?P<featureid>.*)(?P<version>\.\d+)")
+    match = version_detector.match(featureid)
+    if match:
+        return match.groupdict()["featureid"]
+    else:
+        return featureid
+
+def _strip_non_alphanumeric(string):
+    return string.replace('"', '').replace(';', '')
+
+def has_transcript_version(line):
+    version_detector = re.compile(r".*(?P<version>\.\d+)")
+    if "transcript_version" in line:
+        return True
+    txid = line.split("transcript_id")[1].split(" ")[1]
+    txid = _strip_non_alphanumeric(txid)
+    if version_detector.match(txid):
+        return True
+
+def tx2genefile(gtf, out_file=None, data=None, tsv=True, keep_version=False):
     """
     write out a file of transcript->gene mappings.
-    use the installed tx2gene.csv if it exists, else write a new one out
     """
-    installed_tx2gene = os.path.join(os.path.dirname(gtf), "tx2gene.csv")
-    if file_exists(installed_tx2gene):
-        return installed_tx2gene
+    if tsv:
+        extension = ".tsv"
+        sep = "\t"
+    else:
+        extension = ".csv"
+        sep = ","
     if file_exists(out_file):
         return out_file
-    with file_transaction(out_file) as tx_out_file:
+    with file_transaction(data, out_file) as tx_out_file:
         with open(tx_out_file, "w") as out_handle:
-            for k, v in transcript_to_gene(gtf).iteritems():
-                out_handle.write(",".join([k, v]) + "\n")
+            for k, v in tx2genedict(gtf, keep_version).items():
+                out_handle.write(sep.join([k, v]) + "\n")
+    logger.info("tx2gene file %s created from %s." % (out_file, gtf))
     return out_file
-
-def transcript_to_gene(gtf):
-    """
-    return a dictionary keyed by transcript_id of the associated gene_id
-    """
-    gene_lookup = {}
-    for feature in complete_features(get_gtf_db(gtf)):
-        gene_id = feature.attributes.get('gene_id', [None])[0]
-        transcript_id = feature.attributes.get('transcript_id', [None])[0]
-        gene_lookup[transcript_id] = gene_id
-    return gene_lookup
 
 def is_qualimap_compatible(gtf):
     """
@@ -309,9 +359,8 @@ def is_qualimap_compatible(gtf):
     def qualimap_compatible(feature):
         gene_id = feature.attributes.get('gene_id', [None])[0]
         transcript_id = feature.attributes.get('transcript_id', [None])[0]
-        exon_number = feature.attributes.get('exon_number', [None])[0]
         gene_biotype = feature.attributes.get('gene_biotype', [None])[0]
-        return gene_id and transcript_id and exon_number and gene_biotype
+        return gene_id and transcript_id and gene_biotype
     for feature in db.all_features():
         if qualimap_compatible(feature):
             return True
@@ -352,3 +401,22 @@ def canonical_transcripts(gtf, out_file):
                 for exon in db.children(best[2], level=1):
                     out_handle.write(str(exon) + "\n")
     return out_file
+
+def is_cpat_compatible(gtf):
+    """
+    CPAT needs some transcripts annotated with protein coding status to work
+    properly
+    """
+    if not gtf:
+        return False
+    db = get_gtf_db(gtf)
+    pred = lambda biotype: biotype and biotype == "protein_coding"
+    biotype_lookup = _biotype_lookup_fn(gtf)
+    if not biotype_lookup:
+        return False
+    db = get_gtf_db(gtf)
+    for feature in db.all_features():
+        biotype = biotype_lookup(feature)
+        if pred(biotype):
+            return True
+    return False

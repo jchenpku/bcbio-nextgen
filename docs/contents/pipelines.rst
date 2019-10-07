@@ -1,3 +1,5 @@
+.. _pipelines:
+
 Pipelines
 ---------
 
@@ -28,7 +30,7 @@ current implementation:
 - Additional work to `improve variant filtering`_, providing methods to
   remove low complexity regions (LCRs) that can bias indel results. We also
   tuned `GATK's Variant Quality Score Recalibrator`_ (VQSR) and compared it with
-  hard filtering. VQSR requires a large number of variants and we use
+  cutoff-based soft filtering. VQSR requires a large number of variants and we use
   it in bcbio with GATK HaplotypeCaller when your :ref:`algorithm-config`
   contains high depth samples (``coverage_depth`` is not low) and you are
   calling on the whole genome (``coverage_interval`` is genome) or have more
@@ -47,7 +49,10 @@ bcbio automates post-variant calling annotation to make
 the outputs easier to feed directly into your biological analysis. We annotate
 variant effects using `snpEff`_ or `Variant Effect Predictor`_ (VEP), and
 prepare a `GEMINI database`_ that associates variants with multiple
-external annotations in a SQL-based query interface.
+external annotations in a SQL-based query interface. GEMINI databases have the
+most associated external information for human samples (GRCh37/hg19 and hg38)
+but are available for any organism with the database populated using the VCF
+INFO column and predicted effects.
 
 .. _Genome in a Bottle: http://www.genomeinabottle.org/
 .. _variant evaluation framework: https://bcb.io/2013/05/06/framework-for-evaluating-variant-detection-methods-comparison-of-aligners-and-callers/
@@ -72,12 +77,12 @@ The best approach to build a bcbio :ref:`docs-config` for germline calling is to
 the :ref:`automated-sample-config` with one of the default templates:
 
 - `FreeBayes template
-  <https://github.com/chapmanb/bcbio-nextgen/blob/master/config/templates/freebayes-variant.yaml>`_ --
+  <https://github.com/bcbio/bcbio-nextgen/blob/master/config/templates/freebayes-variant.yaml>`_ --
   Call variants using FreeBayes with a minimal preparation pipeline. This is a
   freely available unrestricted pipeline fully included in the bcbio installation.
 
 - `GATK HaplotypeCaller template
-  <https://github.com/chapmanb/bcbio-nextgen/blob/master/config/templates/gatk-variant.yaml>`_ --
+  <https://github.com/bcbio/bcbio-nextgen/blob/master/config/templates/gatk-variant.yaml>`_ --
   Run GATK best practices, including Base Quality Score Recalibration,
   realignment and HaplotypeCaller variant calling. This requires a license from
   Broad for commercial use. You need to manually install GATK along with bcbio
@@ -138,6 +143,8 @@ all merged sample calls. bcbio has two methods to call samples together:
       metadata:
         batch: Batch1
 
+.. _cancer-calling:
+
 Cancer variant calling
 ~~~~~~~~~~~~~~~~~~~~~~
 bcbio supports somatic cancer calling with tumor and optionally matched normal pairs using
@@ -147,44 +154,163 @@ bcbio uses a majority voting ensemble approach to combining calls from
 multiple SNP and indel callers, and also flattens structural variant calls into a
 combined representation.
 
-The `example configuration <https://github.com/chapmanb/bcbio-nextgen/blob/master/config/examples/cancer-dream-syn3.yaml>`_
+The `example configuration <https://github.com/bcbio/bcbio-nextgen/blob/master/config/examples/cancer-dream-syn3.yaml>`_
 for the :ref:`example-cancer` validation is a good starting point for setting up
 a tumor/normal run on your own dataset. The configuration works similarly to
 population based calling. Supply a consistent batch for tumor/normal pairs and
 mark them with the phenotype::
 
     - description: your-tumor
+      algorithm:
+        variantcaller: [vardict, strelka2, mutect2]
       metadata:
         batch: batch1
         phenotype: tumor
     - description: your-normal
+      algorithm:
+        variantcaller: [vardict, strelka2, mutect2]
       metadata:
         batch: batch1
         phenotype: normal
 
 Other :ref:`config-cancer` configuration options allow tweaking of the
-processing parameters.
+processing parameters. For pairs you want to analyze together, specify a
+consistent set of ``variantcaller`` options for both samples.
 
-Cancer calling handles both tumor-normal paired calls and tumor-only calling.
-For tumor-only samples, bcbio will try to remove likely germline variants
-present in the public databases like 1000 genomes and ExAC, and not in COSMIC.
-This runs as long as you have a local GEMINI installation and marks likely
-germline variants with a ``LowPriority`` filter. `This post has more details
+Cancer calling handles both tumor-normal paired calls and tumor-only calling. To
+specify a tumor-only sample, provide a single sample labeled with ``phenotype:
+tumor``. Otherwise the configuration and setup is the same as with paired
+analyses. For tumor-only samples, bcbio will try to remove likely germline
+variants present in the public databases like 1000 genomes and ExAC, and not in
+COSMIC. This runs as long as you have a local GEMINI data installation
+(``--datatarget gemini``) and marks likely germline variants with a
+``LowPriority`` filter. `This post has more details
 <http://bcb.io/2015/03/05/cancerval/>`_ on the approach and validation.
 
 The standard variant outputs (``sample-caller.vcf.gz``) for tumor calling
-emphasize somatic differences, those likely variants unique to the cancer. In
-addition to this file, we also produce a ``sample-caller-germline.vcf.gz`` file
-containing likely germline mutations. These are useful for identifying
-pre-existing genomic changes that can contribute to cancer development, or in
-paired cases like pre and post treatment where you may want to identify
-maintained mutations after treatment.
+emphasize somatic differences, those likely variants unique to the cancer. If
+you have a tumor-only sample and GEMINI data installed, it will also output
+``sample-caller-germline.vcf.gz``, which tries to identify germline background
+mutations based on presence in public databases. If you have tumor/normal data
+and would like to also call likely germline mutations see the documentation on
+specifying a germline caller: :ref:`somatic-w-germline-variants`.
 
 We're actively working on improving calling to better account for the
 heterogeneity and structural variability that define cancer genomes.
 
 .. _full evaluation of cancer calling: http://bcb.io/2015/03/05/cancerval/
 .. _synthetic dataset 3 from the ICGC-TCGA DREAM challenge: https://www.synapse.org/#!Synapse:syn312572/wiki/62018
+
+.. _somatic-w-germline-variants:
+
+Somatic with germline variants
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+For tumor/normal somatic samples, bcbio can call both somatic (tumor-specific)
+and germline (pre-existing) variants. The typical outputs of
+:ref:`cancer-calling` are likely somatic variants acquired by the cancer, but
+pre-existing germline risk variants are often also diagnostic.
+
+For tumor-only cases we suggest running standard :ref:`cancer-calling`.
+Tumor-only inputs mix somatic and germline variants, making it difficult to
+separate events. For small variants (SNPs and indels) bcbio will attempt to
+distinguish somatic and germline mutations using the presence of variants in
+population databases.
+
+To option somatic and germline calls for your tumor/normal inputs, specify
+which callers to use for each step in the :ref:`variant-config` configuration::
+
+    description: your-normal
+    variantcaller:
+       somatic: vardict
+       germline: freebayes
+
+bcbio does a single alignment for the normal sample, then splits at the variant
+calling steps using this normal sample to do germline calling. In this example,
+the output files are:
+
+- ``your-tumor/your-tumor-vardict.vcf.gz`` -- Somatic calls from the tumor
+  samples using the normal as background to subtract existing calls.
+- ``your-normal/your-normal-freebayes.vcf.gz`` -- Germline calls on the normal
+  sample.
+
+Germline calling supports multiple callers, and other configuration options like
+ensemble and structural variant calling inherit from the remainder configuration. For
+example, to use 3 callers for somatic and germline calling, create ensemble calls
+for both and include germline and somatic events from two structural variant
+callers::
+
+    variantcaller:
+       somatic: [vardict, strelka2, mutect2]
+       germline: [freebayes, gatk-haplotype, strelka2]
+    ensemble:
+       numpass: 2
+    svcaller: [manta, cnvkit]
+
+In addition to the somatic and germline outputs attached to the tumor and normal
+sample outputs as described above, you'll get:
+
+- ``your-tumor/your-tumor-manta.vcf.gz`` -- Somatic structural variant calls for
+  each specified ``svcaller``. These will have genotypes for both the tumor and
+  normal samples, with somatic calls labeled as PASS variants.
+- ``your-normal/your-normal-manta.vcf.gz`` -- Germline structural variant calls
+  for each specified ``svcaller``. We expect these to be noisier than the
+  somatic calls due to the lack of a reference sample to help remove technical noise.
+
+.. _cnv_pon-pipeline:
+
+Somatic tumor only CNVs
+~~~~~~~~~~~~~~~~~~~~~~~
+
+Copy number variation (CNVs) detection in tumor only samples requires accurately
+representing the non-somatic capture and sequencing background in the absence of
+a matched sample. Capture or sequencing specific coverage differences can
+trigger false positives or negatives. Without a matched normal to remove these
+artifacts, you can use a process matched set of unrelated samples to build a
+Panel of Normals (PoN) for the background correction.
+
+To create these, collect all the samples you plan to use for the panel of
+normals and run through a :ref:`automated-sample-config` as a single batch with
+the background samples set as control and any nonbackground as the
+non-background. An example sample CSV::
+
+    samplename,description,svclass,batch
+    background1.bam,background1,control,pon_build
+    background2_R1.fq.gz;background2_R2.fq.gz,background2,control,pon_build
+    testsample.bam,testsample,pon_build
+
+and template YAML::
+
+    details:
+      - analysis: variant2
+        genome_build: hg38
+        algorithm:
+          svcaller: [gatk-cnv, seq2c]
+          variant_regions: your_regions.bed
+
+After running, collect the panel of normal files from each calling method:
+
+- gatk-cnv: `work/structural/testsample/bins/background1-pon_build-pon.hdf5`
+- seq2c: This doesn't have a default panel of normals file format so we create a
+  bcbio specific one as a concatenation of the read mapping file
+  (`final/date_project/seq2c-read_mapping.txt`) and coverage file
+  (`final/date_project/seq2c-coverage.tsv`) outputs for the background samples.
+  When fed to future bcbio runs, it will correctly extract and re-use this file
+  as background.
+- CNVkit: `final/testsample/testsample-cnvkit-background.cnn`
+
+CNVkit and gatk-cnv cannot be run together, because they require different,
+incompatible normalization schemes.
+
+Once you have the panel of normals, use them as background in any tumor only project
+with the same sequencing and capture process in your :ref: `variant-config` configuration::
+
+    svcaller: [gatk-cnv, seq2c]
+    variant_regions: your_regions.bed
+    background:
+      cnv_reference:
+        cnvkit: ../pon/your_regions-cnvkit-pon.cnn
+        gatk-cnv: ../pon/your_regions-gatk-cnv-pon.hdf5
+        seq2c: ../pon/your_region-seq2c-pon.txt
 
 .. _svs-pipeline:
 
@@ -217,18 +343,13 @@ calling, `CNVkit <http://cnvkit.readthedocs.org/en/latest/>`_ for read-depth
 based CNV calling, and `WHAM <https://github.com/jewmanchue/wham>`_ for
 association testing. We also support `DELLY
 <https://github.com/tobiasrausch/delly>`_, another excellent paired end and
-split read calling, although it is slow on large whole genome datasets.
-
-In addition to results from individual callers, bcbio can create a summarized
-ensemble callset using `MetaSV <https://github.com/bioinform/metasv>`_. We're
-actively working on improved structural variant reporting to highlight potential
-variants of interest.
+split read caller, although it is slow on large whole genome datasets.
 
 .. _Validation of germline structural variant detection: http://bcb.io/2014/08/12/validated-whole-genome-structural-variation-detection-using-multiple-callers/
 
 RNA-seq
 ~~~~~~~
-bcbio can also be use to analyze RNA-seq data. It includes steps for quality
+bcbio can also be used to analyze RNA-seq data. It includes steps for quality
 control, adapter trimming, alignment, variant calling, transcriptome
 reconstruction and post-alignment quantitation at the level of the gene
 and isoform.
@@ -245,22 +366,23 @@ Sailfish handle contaminant sequences at the ends properly. This makes trimming
 unnecessary. Tophat2 does not perform soft clipping so if using Tophat2,
 trimming must still be done.
 
-Sailfish, which is an extremely fast alignment-free method of quantitation, is
-run for all experiments. Sailfish can accurately quantitate the expression of
+Salmon, which is an extremely fast alignment-free method of quantitation, is
+run for all experiments. Salmon can accurately quantitate the expression of
 genes, even ones which are hard to quantitate with other methods (see `this
-paper <http://www.genomebiology.com/2015/16/1/177>`_ for example). It also
-quantitates at the transcript level which can help gene-level analyses (see
+paper <http://www.genomebiology.com/2015/16/1/177>`_ for example for Sailfish,
+which performs similarly to Salmon.). Salmon can also
+quantitate at the transcript level which can help gene-level analyses (see
 `this paper <http://f1000research.com/articles/4-1521/v1>`_ for example).
-We recommend using the Sailfish quantitation rather than the counts from
+We recommend using the Salmon quantitation rather than the counts from
 featureCounts to perform downstream quantification.
 
-Although we do not recommend using the featureCount based counts, the alignments
+Although we do not recommend using the featureCounts based counts, the alignments
 are still useful because they give you many more quality metrics than the
-pseudoalignments from Sailfish.
+quasi-alignments from Salmon.
 
 After a bcbio RNA-seq run there will be in the ``upload`` directory a directory
 for each sample which contains a BAM file of the aligned and unaligned reads, a
-``Sailfish`` directory with the output of Sailfish, including TPM values, and a
+``sailfish`` directory with the output of Salmon, including TPM values, and a
 ``qc`` directory with plots from FastQC and qualimap.
 
 In addition to directories for each sample, in the ``upload`` directory there is
@@ -276,6 +398,7 @@ This mode of ``bcbio-nextgen`` quantitates transcript expression using `Salmon
 order of magnitude faster or more than running the full RNA-seq analysis. The
 cost of the increased speed is that you will have much less information about
 your samples at the end of the run, which can make troubleshooting trickier.
+Invoke with ``analysis: fastrna-seq``.
 
 single-cell RNA-seq
 ~~~~~~~~~~~~~~~~~~~
@@ -298,10 +421,7 @@ columns as the cellular barcodes for each input FASTQ file.
 
 Optionally the reads can be quantitated with ``kallisto`` to output transcript
 compatibility counts rather than counts per gene
-(`TCC paper <https://genomebiology.biomedcentral.com/articles/10.1186/s13059-016-0970-8>`_)
-``kallisto`` is free for academic use, but if you are a commerical entity,
-you need a `license <https://pachterlab.github.io/kallisto/download>`_ from
-UC Berkeley.
+(`TCC paper <https://genomebiology.biomedcentral.com/articles/10.1186/s13059-016-0970-8>`_).
 
 To extract the UMI and cellular barcodes from the read, bcbio-nextgen
 needs to know where the UMI and the cellular barcode are expected to be
@@ -313,6 +433,7 @@ help implement support for it.
 Most of the heavy lifting for this part of `bcbio-nextgen` is implemented in
 the `umis <https://github.com/vals/umis>`_ repository.
 
+
 smallRNA-seq
 ~~~~~~~~~~~~
 
@@ -321,20 +442,36 @@ quality controls, adapter trimming, miRNA/isomiR quantification and other small 
 detection.
 
 - Adapter trimming:
-  - `cutadapt`_
+
+  - `atropos`_
+  - `dnapi <https://github.com/jnktsj/DNApi>`_ for adapter de-novo detection
 
 - Sequence alignment:
+
   - `STAR`_ for genome annotation
   - bowtie, `bowtie2` and  `hisat2`_ for genome annotation as an option
 
-- Known small RNAs quantification:
+- Specific small RNAs quantification (miRNA/tRNAs...):
+
   - `seqbuster <https://github.com/lpantano/seqbuster>`_ for miRNA annotation
-  - `tdrmapper`_ for tRNA fragments annotation
+  - `MINTmap`_ for tRNA fragments annotation
+  - `miRge2`_ for alternative small RNA quantification. To setup this tool, you need
+              install manually miRge2.0, and download the library data for your species.
+              Read how to install and download the data `here <https://github.com/mhalushka/miRge#download-libraries>`_. 
+              If you have ``human`` folder at ``/mnt/data/human``
+              the option to pass to resources will be ``/mnt/data``.
+              Then setup ``resources``::
+
+    resources:
+      mirge:
+        options: ["-lib $PATH_TO_PARENT_SPECIES_LIB"]
 
 - Quality control:
+
   - `FastQC`_
 
 - Other small RNAs quantification:
+
   - `seqcluster <https://github.com/lpantano/seqcluster>`_
   - `mirDeep2`_ for miRNA prediction
 
@@ -351,33 +488,48 @@ tdrmapper results will be inside each sample
 inside ``tdrmapper`` or final project folder.
 
 .. _tdrmapper: https://github.com/sararselitsky/tDRmapper
-.. _miRDeep2: https://www.mdc-berlin.de/8551903/en/
+.. _MINTmap: https://github.com/TJU-CMC-Org/MINTmap
+.. _miRDeep2: https://www.mdc-berlin.de/8551903/en
+.. _miRge2: https://github.com/mhalushka/miRge
 .. _isomiRs: https://github.com/lpantano/isomiRs
 
-ChIP-seq
-~~~~~~~~
-bcbio-nextgen implements the first steps of a ChIP-seq analysis up to aligning with
-bowtie2. It does alignment and peak calling with MACS2.
+ChIP/ATAC-seq
+~~~~~~~~~~~~~
+The bcbio-nextgen implementation of ChIP-seq aligns, removes multimapping reads,
+calls peaks with a paired input file using MACS2 and outputs a set of greylist
+regions for filtering possible false peaks in regions of high depth in the input
+file.
 
 - Adapter trimming:
-  - `cutadapt`_
+  - `atropos`_
 
 - Sequence alignment:
-  - `bowtie2`_
+  - `bowtie2`_, `bwa mem`_
 
 - Peak calling:
   - `macs2`_
+
+- Greylisting:
+  - `chipseq-greylist`_
 
 - Quality control:
   - `FastQC`_
 
 .. _macs2: https://github.com/taoliu/MACS
+.. _chipseq-greylist: https://github.com/roryk/chipseq-greylist
+
+Methylation
+~~~~~~~~~~~
+Whole genome bisulfite sequencing is supported using the `bismark2`_ pipeline.
+It can be turned on by setting `analysis` to `wgbs-seq`.
+
+.. _bismark2: https://www.bioinformatics.babraham.ac.uk/projects/bismark/
 
 Standard
 ~~~~~~~~
 
 This pipeline implements ``alignment`` and ``qc`` tools. Furthermore, it will
-run `qsignature`_ to detect possible duplicated samples, or miss-labeling. It
+run `qsignature`_ to detect possible duplicated samples, or mislabeling. It
 uses SNPs signature to create a distance matrix that helps easily to create
 groups. The project yaml file will show the number of total samples analyzed,
 the number of very similar samples, and samples that could be duplicated.
@@ -412,7 +564,7 @@ experiment would look like::
              strandedness: unstranded
 
 ``fc_date`` and ``fc_name`` will be combined to form a prefix to name
-intermediate files, you can set them to whatever you like.  ``upload`` is
+intermediate files, and can be set to whatever you like. ``upload`` is
 explained pretty well in the `configuration documentation`_ and the above will
 direct bcbio-nextgen to put the output files from the pipeine into the ``final``
 directory.  Under ``details`` is a list of sections each describing a sample to
@@ -437,7 +589,7 @@ RNA-seq libraries, so we want to trim off possible adapter sequences on the ends
 of reads, so ``trim_reads`` is set to ``read_through``, which will also trim off
 poor quality ends. Since your library is a RNA-seq library prepared with the
 TruSeq kit, the set of adapters to trim off are the TruSeq adapters and possible
-polyA tails, so ``adapters`` is set to the both of those. ``strandedness``
+polyA tails, so ``adapters`` is set to both of those. ``strandedness``
 can be set if your library was prepared in a strand-specific manner and can
 be set to firststrand, secondstrand or unstranded (the default).
 
@@ -492,7 +644,7 @@ sample configuration file for that analysis::
 
 More samples are added just by adding more entries under the details section.
 This is tedious and error prone to do by hand, so there is an automated
-`template_` system for common experiments. You could set up the previous
+`template`_ system for common experiments. You could set up the previous
 experiment by making a mouse version of the `illumina-rnaseq`_ template
 file and saving it to a local file such as ``illumina-mouse-rnaseq.yaml``. Then
 you can set up the sample file using the templating system::
@@ -512,16 +664,16 @@ templating system.
 .. _bowtie2: http://bowtie-bio.sourceforge.net/bowtie2/index.shtml
 .. _tophat2: http://tophat.cbcb.umd.edu/
 .. _STAR: http://code.google.com/p/rna-star/
-.. _cutadapt: http://cutadapt.readthedocs.org/en/latest/guide.html
+.. _atropos: http://atropos.readthedocs.org/en/latest/guide.html
 .. _qualimap: http://qualimap.bioinfo.cipf.es
 .. _FastQC: http://www.bioinformatics.babraham.ac.uk/projects/fastqc/
 .. _HTSeq: http://www-huber.embl.de/users/anders/HTSeq/doc/index.html
 .. _TruSeq: http://www.illumina.com/products/truseq_rna_sample_prep_kit_v2.ilmn
-.. _bcbio_system.yaml: http://github.com/chapmanb/bcbio-nextgen/blob/master/config/bcbio_system.yaml
+.. _bcbio_system.yaml: http://github.com/bcbio/bcbio-nextgen/blob/master/config/bcbio_system.yaml
 .. _configuration documentation: http://bcbio-nextgen.readthedocs.org/en/latest/contents/configuration.html#upload
 .. _parameters: http://bcbio-nextgen.readthedocs.org/en/latest/contents/configuration.html
 .. _template: http://bcbio-nextgen.readthedocs.org/en/latest/contents/configuration.html#automated-sample-configuration
-.. _illumina-rnaseq: http://raw.github.com/chapmanb/bcbio-nextgen/master/config/templates/illumina-rnaseq.yaml
+.. _illumina-rnaseq: http://raw.github.com/bcbio/bcbio-nextgen/master/config/templates/illumina-rnaseq.yaml
 .. _eXpress: http://bio.math.berkeley.edu/eXpress/overview.html
 .. _featureCounts: http://bioinf.wehi.edu.au/featureCounts/
 .. _DEXSeq: https://bioconductor.org/packages/release/bioc/html/DEXSeq.html

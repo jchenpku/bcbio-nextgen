@@ -13,21 +13,15 @@ import sys
 import time
 import zlib
 
-try:
-    import azure
-    from azure import storage as azure_storage
-except ImportError:
-    azure, azure_storage = None, None
-import boto
 import six
 
 from bcbio.distributed.transaction import file_transaction
+from bcbio.provenance import do
 from bcbio import utils
 
 SUPPORTED_REMOTES = ("s3://",)
 BIODATA_INFO = {"s3": "s3://biodata/prepped/{build}/{build}-{target}.tar.gz"}
 REGIONS_NEWPERMS = {"s3": ["eu-central-1"]}
-
 
 @six.add_metaclass(abc.ABCMeta)
 class FileHandle(object):
@@ -87,7 +81,7 @@ class FileHandle(object):
         pass
 
     @abc.abstractmethod
-    def read(self, size=sys.maxint):
+    def read(self, size=sys.maxsize):
         """Read at most size bytes from the file (less if the read hits EOF
         before obtaining size bytes).
         """
@@ -122,7 +116,7 @@ class S3Handle(FileHandle):
         for chunk in self._key:
             yield self._decompress(chunk)
 
-    def read(self, size=sys.maxint):
+    def read(self, size=sys.maxsize):
         """Read at most size bytes from the file (less if the read hits EOF
         before obtaining size bytes).
         """
@@ -130,7 +124,7 @@ class S3Handle(FileHandle):
 
     def next(self):
         """Return the next item from the container."""
-        return self._iter.next()
+        return next(self._iter)
 
     def close(self):
         """Close the file handle."""
@@ -184,6 +178,7 @@ class BlobHandle(FileHandle):
     def _download_chunk_with_retries(self, chunk_offset, chunk_size,
                                      retries=3, retry_wait=1):
         """Reads or downloads the received blob from the system."""
+        import azure
         while True:
             try:
                 chunk = self._download_chunk(chunk_offset, chunk_size)
@@ -206,7 +201,7 @@ class BlobHandle(FileHandle):
             blob_name=self._blob_name,
             x_ms_range=range_id)
 
-    def read(self, size=sys.maxint):
+    def read(self, size=sys.maxsize):
         """Read at most size bytes from the file (less if the read hits EOF
         before obtaining size bytes).
         """
@@ -219,7 +214,7 @@ class BlobHandle(FileHandle):
 
     def next(self):
         """Return the next item from the container."""
-        return self._iter.next()
+        return next(self._iter)
 
     def close(self):
         """Close the file handle."""
@@ -370,6 +365,7 @@ class AmazonS3(StorageManager):
         Returns a connection object pointing to the endpoint associated
         to the received resource.
         """
+        import boto
         return boto.s3.connect_to_region(cls.get_region(resource))
 
     @classmethod
@@ -410,7 +406,7 @@ class AmazonS3(StorageManager):
         command = " ".join(command)
         if filename.endswith(".gz") and unpack:
             command = "%(command)s | gunzip -c" % {"command": command}
-        elif filename.endwith(".bz2") and unpack:
+        elif filename.endswith(".bz2") and unpack:
             command = "%(command)s | bunzip2 -c" % {"command": command}
         if anonpipe:
             command = "<(%(command)s)" % {"command": command}
@@ -437,6 +433,7 @@ class AmazonS3(StorageManager):
     @classmethod
     def open(cls, filename):
         """Return a handle like object for streaming from S3."""
+        import boto
         file_info = cls.parse_remote(filename)
         connection = cls.connect(filename)
         try:
@@ -464,7 +461,7 @@ class AzureBlob(StorageManager):
                   "{container}/{blob}")
     _REMOTE_FILE = collections.namedtuple(
         "RemoteFile", ["store", "storage", "container", "blob"])
-    _URL_FORMAT = re.compile(r'http.*\/\/(?P<storage>[^.]+)[^/]+\/'
+    _URL_FORMAT = re.compile(r'http.*\/\/(?P<storage>[^.]+).blob.core.windows.net\/'
                              r'(?P<container>[^/]+)\/*(?P<blob>.*)')
     _BLOB_CHUNK_DATA_SIZE = 4 * 1024 * 1024
 
@@ -492,6 +489,7 @@ class AzureBlob(StorageManager):
         """Returns a connection object pointing to the endpoint
         associated to the received resource.
         """
+        from azure import storage as azure_storage
         file_info = cls.parse_remote(resource)
         return azure_storage.BlobService(file_info.storage)
 
@@ -520,6 +518,8 @@ class AzureBlob(StorageManager):
         """Return a list containing the names of the entries in the directory
         given by path. The list is in arbitrary order.
         """
+        import azure
+        from azure import storage as azure_storage
         output = []
         path_info = cls.parse_remote(path)
         blob_service = azure_storage.BlobService(path_info.storage)
@@ -554,9 +554,76 @@ class ArvadosKeep:
     def download(self, filename, input_dir, dl_dir=None):
         return None
 
+class SevenBridges:
+    """Files stored in SevenBridges. Partial implementation, integration in bcbio-vm.
+    """
+    @classmethod
+    def check_resource(self, resource):
+        return resource.startswith("sbg:")
+    @classmethod
+    def download(self, filename, input_dir, dl_dir=None):
+        return None
+
+class DNAnexus:
+    """Files stored in DNAnexus. Partial implementation, integration in bcbio-vm.
+    """
+    @classmethod
+    def check_resource(self, resource):
+        return resource.startswith("dx:")
+    @classmethod
+    def download(self, filename, input_dir, dl_dir=None):
+        return None
+
+class GoogleCloud:
+    """Files stored in Google Cloud Storage. Partial implementation, integration in bcbio-vm.
+    """
+    @classmethod
+    def check_resource(self, resource):
+        return resource.startswith("gs:")
+    @classmethod
+    def download(self, filename, input_dir, dl_dir=None):
+        return None
+
+class RegularServer:
+    """Files stored in FTP/http that can be downloaded by wget
+    """
+
+    @classmethod
+    def _parse_url(self, fn):
+        regex = re.compile(r'^(?:http|ftp)s?://.*(.fastq.gz)[^/]*|' # http:// or https://
+                           r'^(?:http|ftp)s?://.*(.fastq)[^/]*|'
+                           r'^(?:http|ftp)s?://.*(.bam)[^/]*'
+                           , re.IGNORECASE)
+        return regex.match(fn)
+
+    @classmethod
+    def check_resource(self, resource):
+        if self._parse_url(resource):
+            return True
+
+    @classmethod
+    def download(self, filename, input_dir, dl_dir=None):
+        match = self._parse_url(filename)
+        file_info = os.path.basename(filename)
+        ext = file_info.find(match.group(1))
+        name = file_info[:ext]
+        if not dl_dir:
+            dl_dir = os.path.join(input_dir, name)
+            utils.safe_makedir(dl_dir)
+
+        fixed_name = "%s%s" % (name, match.group(1))
+        out_file = os.path.join(dl_dir, fixed_name)
+
+        if not utils.file_exists(out_file):
+            with file_transaction({}, out_file) as tx_out_file:
+                cmd = "wget -O {tx_out_file} {filename}"
+                do.run(cmd.format(**locals()), "Download %s" % out_file)
+
+        return out_file
+
 def _get_storage_manager(resource):
     """Return a storage manager which can process this resource."""
-    for manager in (AmazonS3, AzureBlob, ArvadosKeep):
+    for manager in (AmazonS3, ArvadosKeep, SevenBridges, DNAnexus, AzureBlob, GoogleCloud, RegularServer):
         if manager.check_resource(resource):
             return manager()
 
@@ -578,10 +645,7 @@ def is_remote(fname):
 
 def file_exists_or_remote(fname):
     """Check if a file exists or is accessible remotely."""
-    if is_remote(fname):
-        return True
-    else:
-        return utils.file_exists(fname)
+    return is_remote(fname) or utils.file_exists(fname)
 
 
 def default_region(fname):
@@ -634,7 +698,7 @@ def list(remote_dirname):
     return manager.list(remote_dirname)
 
 
-def open(fname):
+def open_file(fname):
     """Provide a handle-like object for streaming."""
     manager = _get_storage_manager(fname)
     return manager.open(fname)

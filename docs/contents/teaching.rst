@@ -1,6 +1,15 @@
 .. _teaching:
-Teaching
-========
+
+Teaching 
+--------
+
+Single cell RNA-seq analysis
+~~~~~~~~~~~~~~~~~~~~~~~~
+`Setting up bcbio single cell RNA-seq analysis <https://github.com/hbc/tutorials/blob/master/scRNAseq/scRNAseq_analysis_tutorial/lessons/01_bcbio_run.md>`_
+tutorial outlines the steps needed to run bcbio in that use case.
+
+Cancer tumor-normal variant calling
+~~~~~~~~~~~~~~~~~~~~~~~~
 This is a teaching orientated example of using bcbio from the Cold Spring Harbor
 Laboratory's `Advanced Sequencing Technology and Applications course
 <http://meetings.cshl.edu/courses.aspx?course=C-SEQTEC&year=15>`_. This uses
@@ -18,7 +27,8 @@ chromosome 6 to reduce runtimes. It demonstrates:
 - Validation of both small and structural variants against truth sets.
 
 Loading pre-run analysis
-~~~~~~~~~~~~~~~~~~~~~~~~
+========================
+
 To save downloading the genome data and running the analysis, we have a
 pre-prepared AMI with the data and analysis run. Use the `AWS Console
 <https://console.aws.amazon.com/ec2>`_ to launch the pre-built AMI -- search
@@ -33,12 +43,12 @@ with the biological data installed in ``/usr/local/share/bcbio``. The run is in
 a ``~/run/cancer-syn3-chr6``.
 
 Input configuration file
-~~~~~~~~~~~~~~~~~~~~~~~~~
+========================
+
 To run bcbio, you prepare a small configuration file describing your analysis.
-You can `prepare it manually or use an automated configuration method
-<https://bcbio-nextgen.readthedocs.org/en/latest/contents/configuration.html>`_.
+You can `prepare it manually or use an automated configuration method <https://bcbio-nextgen.readthedocs.org/en/latest/contents/configuration.html>`_.
 The example has a pre-written configuration file with tumor/normal data located
-in the ``config` directory and this section walks through the settings.
+in the ``config`` directory and this section walks through the settings.
 
 You define the type of analysis (variant calling) along with the input files and
 genome build::
@@ -90,10 +100,10 @@ Call HLA types with OptiType::
 
 Finally, we validate both the small variants and structural variants. These use
 pre-installed validation sets that come with bcbio. We limit validation regions
-to avoid low complexity regions, which cause bias in ``validating indels
+to avoid low complexity regions, which cause bias in `validating indels
 <http://bcb.io/2014/05/12/wgs-trio-variant-evaluation/>`_::
 
-      remove_lcr: true
+      exclude_regions: [lcr]
       validate: dream-syn3-crossmap/truth_small_variants.vcf.gz
       validate_regions: dream-syn3-crossmap/truth_regions.bed
       svvalidate:
@@ -102,12 +112,15 @@ to avoid low complexity regions, which cause bias in ``validating indels
         INV: dream-syn3-crossmap/truth_INV.bed
 
 Output files
-~~~~~~~~~~~~
+============
+
 Output files are in ``~/run/cancer-syn3-chr6/final``, extracted from the full
 work directory in ``~/run/cancer-syn3-chr6/work``.
 
-The directories with sample information are in ``syn3-tumor/``. These include the
-aligned BAMs (along with separated split and discordant reads in individual files)::
+The directories with sample information are in ``syn3-tumor/``. Aligned BAMs
+include a ``-ready.bam`` file with all of the original reads (including split
+and discordants) and separate files with only the split (``-sr.bam``) and
+discordant (``-disc.bam``) reads::
 
     syn3-tumor-ready.bam
     syn3-tumor-ready.bam.bai
@@ -115,11 +128,6 @@ aligned BAMs (along with separated split and discordant reads in individual file
     syn3-tumor-sr.bam.bai
     syn3-tumor-disc.bam
     syn3-tumor-disc.bam.bai
-
-Quality control calculation::
-
-    qc/bamtools
-    qc/fastqc
 
 SNP and indel calls for 3 callers, plus combined ensemble calls::
 
@@ -155,24 +163,24 @@ Validation results from comparisons against truth set, including plots::
     syn3-tumor-validate.png
 
 The top level directory for the project, ``2015-11-18_syn3-cshl/`` has files
-relevant to the entire run. These include provenance information, with log files
-of all commands run and program versions used::
+relevant to the entire run. There is a consolidated quality control report::
+
+    multiqc/multiqc_report.html
+
+Povenance information, with log files of all commands run and program versions used::
 
     bcbio-nextgen.log
     bcbio-nextgen-commands.log
     programs.txt
+    data_versions.csv
 
 A top level summary of metrics for alignment, variant calling and coverage that
 is useful downstream::
 
     project-summary.yaml
 
-A full coverage report for assessing potentially missed regions in the genome::
-
-    report
-
 Preparing and Running
-~~~~~~~~~~~~~~~~~~~~~
+=====================
 The steps to prepare an AMI from a bare machine and run the analysis. These are
 pre-done on the teaching AMI to save time:
 
@@ -190,7 +198,7 @@ pre-done on the teaching AMI to save time:
      sudo apt-get install -y build-essential zlib1g-dev wget curl python-setuptools git \
                              openjdk-7-jdk openjdk-7-jre ruby libncurses5-dev libcurl4-openssl-dev \
                              libbz2-dev unzip pigz bsdmainutils
-     wget https://raw.githubusercontent.com/chapmanb/bcbio-nextgen/master/scripts/bcbio_nextgen_install.py
+     wget https://raw.githubusercontent.com/bcbio/bcbio-nextgen/master/scripts/bcbio_nextgen_install.py
      python bcbio_nextgen_install.py /usr/local/share/bcbio --tooldir /usr/local \
             --genomes hg38 --aligners bwa --sudo --isolate -u development
 
@@ -198,7 +206,7 @@ pre-done on the teaching AMI to save time:
 
      mkdir -p run
      cd run
-     wget https://raw.githubusercontent.com/chapmanb/bcbio-nextgen/master/config/teaching/cancer-syn3-chr6-prep.sh
+     wget https://raw.githubusercontent.com/bcbio/bcbio-nextgen/master/config/teaching/cancer-syn3-chr6-prep.sh
      bash cancer-syn3-chr6-prep.sh
 
 5. Run the analysis::

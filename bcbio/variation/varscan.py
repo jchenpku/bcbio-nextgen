@@ -33,7 +33,7 @@ def run_varscan(align_bams, items, ref_file, assoc_files,
     return call_file
 
 
-def _get_varscan_opts(config, tmp_dir):
+def _get_jvm_opts(config, tmp_dir):
     """Retrieve common options for running VarScan.
     Handles jvm_opts, setting user and country to English to avoid issues
     with different locales producing non-compliant VCF.
@@ -47,14 +47,16 @@ def _get_varscan_opts(config, tmp_dir):
     jvm_opts += broad.get_default_jvm_opts(tmp_dir)
     return " ".join(jvm_opts)
 
-def _safe_to_float(x):
-    if x is None:
-        return None
-    else:
-        try:
-            return float(x)
-        except ValueError:
-            return None
+
+def _varscan_options_from_config(config):
+    """Retrieve additional options for VarScan from the configuration.
+    """
+    opts = ["--min-coverage 5", "--p-value 0.98", "--strand-filter 1"]
+    resources = config_utils.get_resources("varscan", config)
+    if resources.get("options"):
+        opts += [str(x) for x in resources["options"]]
+    return opts
+
 
 def spv_freq_filter(line, tumor_index):
     """Filter VarScan calls based on the SPV value and frequency.
@@ -73,9 +75,9 @@ def spv_freq_filter(line, tumor_index):
     else:
         parts = line.split("\t")
         sample_ft = {a: v for (a, v) in zip(parts[8].split(":"), parts[9 + tumor_index].split(":"))}
-        freq = _safe_to_float(sample_ft.get("FREQ"))
+        freq = utils.safe_to_float(sample_ft.get("FREQ"))
         spvs = [x for x in parts[7].split(";") if x.startswith("SPV=")]
-        spv = _safe_to_float(spvs[0].split("=")[-1] if spvs else None)
+        spv = utils.safe_to_float(spvs[0].split("=")[-1] if spvs else None)
         fname = None
         if spv is not None and freq is not None:
             if spv < 0.05 and freq > 0.35:
@@ -116,20 +118,19 @@ def _varscan_paired(align_bams, ref_file, items, target_regions, out_file):
         snp_file = base + "-snp.vcf"
         with file_transaction(config, indel_file, snp_file) as (tx_indel, tx_snp):
             with tx_tmpdir(items[0]) as tmp_dir:
-                jvm_opts = _get_varscan_opts(config, tmp_dir)
+                jvm_opts = _get_jvm_opts(config, tmp_dir)
+                opts = " ".join(_varscan_options_from_config(config))
                 remove_zerocoverage = r"{ ifne grep -v -P '\t0\t\t$' || true; }"
                 export = utils.local_path_export()
                 varscan_cmd = ("{export} varscan {jvm_opts} somatic "
-                               " <({normal_mpileup_cl} | {remove_zerocoverage}) "
+                               "<({normal_mpileup_cl} | {remove_zerocoverage}) "
                                "<({tumor_mpileup_cl} | {remove_zerocoverage}) "
                                "--output-snp {tx_snp} --output-indel {tx_indel} "
-                               " --output-vcf --min-coverage 5 --p-value 0.98 "
-                               "--strand-filter 1 ")
+                               "--output-vcf {opts} ")
                 # add minimum AF
-                if "--min-var-freq" not in varscan_cmd:
-                    min_af = float(utils.get_in(paired.tumor_config, ("algorithm",
-                                                                      "min_allele_fraction"), 10)) / 100.0
-                    varscan_cmd += "--min-var-freq {min_af} "
+                min_af = float(utils.get_in(paired.tumor_config, ("algorithm",
+                                                                  "min_allele_fraction"), 10)) / 100.0
+                varscan_cmd += "--min-var-freq {min_af} "
                 do.run(varscan_cmd.format(**locals()), "Varscan", None, None)
 
         to_combine = []
@@ -146,8 +147,8 @@ def _varscan_paired(align_bams, ref_file, items, target_regions, out_file):
                            "{py_cl} -x 'bcbio.variation.varscan.fix_varscan_output(x,"
                             """ "{normal_name}", "{tumor_name}")' | """
                            "{fix_ambig_ref} | {fix_ambig_alt} | ifne vcfuniqalleles | "
+                           """{py_cl} -x 'bcbio.variation.vcfutils.add_contig_to_header(x, "{ref_file}")' | """
                            """bcftools filter -m + -s REJECT -e "SS != '.' && SS != '2'" 2> /dev/null | """
-                           "{py_cl} -x 'bcbio.variation.varscan.spv_freq_filter(x, 1)' | "
                            "bgzip -c > {tx_fix_file}")
                     do.run(cmd.format(**locals()), "Varscan paired fix")
                 to_combine.append(fix_file)
@@ -203,31 +204,40 @@ def fix_varscan_output(line, normal_name="", tumor_name=""):
     except ValueError:
         return "\t".join(line)
 
-    if len(line) > 10:
-        Ifreq = line[8].split(":").index("FREQ")
-        ndat = line[9].split(":")
-        tdat = line[10].split(":")
-        # HACK: The position of the SS= changes, so we just search for it
-        ss_vals = [item for item in line[7].split(";") if item.startswith("SS=")]
-        if len(ss_vals) > 0:
-            somatic_status = int(ss_vals[0].split("=")[1])  # Get the number
-        else:
-            somatic_status = None
+    def _normalize_freq(line, sample_i):
+        """Ensure FREQ genotype value is float as defined in header.
+        """
+        ft_parts = line[8].split(":")
+        dat = line[sample_i].split(":")
+        # Non-conforming no-call sample, don't try to fix FREQ
+        if len(dat) != len(ft_parts):
+            return line
+        freq_i = ft_parts.index("FREQ")
+        try:
+            dat[freq_i] = str(float(dat[freq_i].rstrip("%")) / 100)
+        except ValueError:  # illegal binary characters -- set frequency to zero
+            dat[freq_i] = "0.0"
+        line[sample_i] = ":".join(dat)
+        return line
 
-        try:
-            ndat[Ifreq] = str(float(ndat[Ifreq].rstrip("%")) / 100)
-        except ValueError:  # illegal binary characters -- set frequency to zero
-            ndat[Ifreq] = "0.0"
-        try:
-            tdat[Ifreq] = str(float(tdat[Ifreq].rstrip("%")) / 100)
-        except ValueError:  # illegal binary characters -- set frequency to zero
-            tdat[Ifreq] = "0.0"
-        line[9] = ":".join(ndat)
-        line[10] = ":".join(tdat)
-        if somatic_status == 5:
-            # "Unknown" states are broken in current versions of VarScan
-            # so we just bail out here for now
-            return
+    if len(line) > 9:
+        line = _normalize_freq(line, 9)
+        if len(line) > 10:
+            line = _normalize_freq(line, 10)
+            # HACK: The position of the SS= changes, so we just search for it
+            ss_vals = [item for item in line[7].split(";") if item.startswith("SS=")]
+            if len(ss_vals) > 0:
+                somatic_status = int(ss_vals[0].split("=")[1])  # Get the number
+            else:
+                somatic_status = None
+            if somatic_status == 5:
+                # "Unknown" states are broken in current versions of VarScan
+                # so we just bail out here for now
+                return
+            # fix FREQ for any additional samples -- multi-sample VarScan calling
+            if len(line) > 11:
+                for i in range(11, len(line)):
+                    line = _normalize_freq(line, i)
 
     #FIXME: VarScan also produces invalid REF records (e.g. CAA/A)
     # This is not handled yet.
@@ -292,16 +302,19 @@ def _varscan_work(align_bams, ref_file, items, target_regions, out_file):
     # we use ifne from moreutils to ensure we process only on files with input, skipping otherwise
     # http://manpages.ubuntu.com/manpages/natty/man1/ifne.1.html
     with tx_tmpdir(items[0]) as tmp_dir:
-        jvm_opts = _get_varscan_opts(config, tmp_dir)
+        jvm_opts = _get_jvm_opts(config, tmp_dir)
+        opts = " ".join(_varscan_options_from_config(config))
+        min_af = float(utils.get_in(config, ("algorithm", "min_allele_fraction"), 10)) / 100.0
         fix_ambig_ref = vcfutils.fix_ambiguous_cl()
         fix_ambig_alt = vcfutils.fix_ambiguous_cl(5)
         py_cl = os.path.join(os.path.dirname(sys.executable), "py")
         export = utils.local_path_export()
         cmd = ("{export} {mpileup} | {remove_zerocoverage} | "
-                "ifne varscan {jvm_opts} mpileup2cns --min-coverage 5 --p-value 0.98 "
-                "  --vcf-sample-list {sample_list} --output-vcf --variants | "
+               "ifne varscan {jvm_opts} mpileup2cns {opts} "
+               "--vcf-sample-list {sample_list} --min-var-freq {min_af} --output-vcf --variants | "
+               """{py_cl} -x 'bcbio.variation.vcfutils.add_contig_to_header(x, "{ref_file}")' | """
                "{py_cl} -x 'bcbio.variation.varscan.fix_varscan_output(x)' | "
-                "{fix_ambig_ref} | {fix_ambig_alt} | ifne vcfuniqalleles > {out_file}")
+               "{fix_ambig_ref} | {fix_ambig_alt} | ifne vcfuniqalleles > {out_file}")
         do.run(cmd.format(**locals()), "Varscan", None,
                 [do.file_exists(out_file)])
     os.remove(sample_list)

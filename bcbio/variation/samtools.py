@@ -13,6 +13,9 @@ from bcbio.pipeline.shared import subset_variant_regions
 from bcbio.provenance import do, programs
 from bcbio.variation import annotation, bamprep, bedutils, vcfutils
 
+import six
+
+
 def shared_variantcall(call_fn, name, align_bams, ref_file, items,
                        assoc_files, region=None, out_file=None):
     """Provide base functionality for prepping and indexing for variant calling.
@@ -26,9 +29,9 @@ def shared_variantcall(call_fn, name, align_bams, ref_file, items,
     if not file_exists(out_file):
         logger.debug("Genotyping with {name}: {region} {fname}".format(
               name=name, region=region, fname=os.path.basename(align_bams[0])))
-        variant_regions = bedutils.merge_overlaps(bedutils.population_variant_regions(items), items[0])
-        target_regions = subset_variant_regions(variant_regions, region, out_file)
-        if (variant_regions is not None and isinstance(target_regions, basestring)
+        variant_regions = bedutils.population_variant_regions(items, merged=True)
+        target_regions = subset_variant_regions(variant_regions, region, out_file, items=items)
+        if (variant_regions is not None and isinstance(target_regions, six.string_types)
               and not os.path.isfile(target_regions)):
             vcfutils.write_empty_vcf(out_file, config)
         else:
@@ -37,9 +40,7 @@ def shared_variantcall(call_fn, name, align_bams, ref_file, items,
                         tx_out_file)
     if out_file.endswith(".gz"):
         out_file = vcfutils.bgzip_and_index(out_file, config)
-    ann_file = annotation.annotate_nongatk_vcf(out_file, align_bams, assoc_files.get("dbsnp"),
-                                               ref_file, config)
-    return ann_file
+    return out_file
 
 def run_samtools(align_bams, items, ref_file, assoc_files, region=None,
                  out_file=None):
@@ -54,11 +55,28 @@ def prep_mpileup(align_bams, ref_file, config, max_read_depth=None,
     if max_read_depth:
         cl += ["-d", str(max_read_depth), "-L", str(max_read_depth)]
     if want_bcf:
-        cl += ["-t", "DP", "-u", "-g"]
+        cl += ["-t", "DP", "-t", "AD", "-u", "-g"]
     if target_regions:
         str_regions = bamprep.region_to_gatk(target_regions)
         if os.path.isfile(str_regions):
             cl += ["-l", str_regions]
+        else:
+            cl += ["-r", str_regions]
+    cl += align_bams
+    return " ".join(cl)
+
+def prep_bcftools_mpileup(align_bams, ref_file, config, max_read_depth=None,
+                    target_regions=None, want_bcf=True):
+    cl = [config_utils.get_program("bcftools", config), "mpileup", "-f", ref_file]
+    # samtools default max read depth was 8000 as opposed to 250 in bcftools
+    max_read_depth = 8000 if not max_read_depth else max_read_depth
+    cl += ["-d", str(max_read_depth)]
+    if want_bcf:
+        cl += ["-a", "DP", "-a", "AD"]
+    if target_regions:
+        str_regions = bamprep.region_to_gatk(target_regions)
+        if os.path.isfile(str_regions):
+            cl += ["-R", str_regions]
         else:
             cl += ["-r", str_regions]
     cl += align_bams
@@ -71,17 +89,19 @@ def _call_variants_samtools(align_bams, ref_file, items, target_regions, tx_out_
     by removing addition 4.2-only isms from VCF header lines.
     """
     config = items[0]["config"]
-    mpileup = prep_mpileup(align_bams, ref_file, config,
+    mpileup = prep_bcftools_mpileup(align_bams, ref_file, config,
                            target_regions=target_regions, want_bcf=True)
     bcftools = config_utils.get_program("bcftools", config)
-    bcftools_version = programs.get_version("bcftools", config=config)
     samtools_version = programs.get_version("samtools", config=config)
-    if LooseVersion(samtools_version) <= LooseVersion("0.1.19"):
+    if samtools_version and LooseVersion(samtools_version) <= LooseVersion("0.1.19"):
         raise ValueError("samtools calling not supported with pre-1.0 samtools")
     bcftools_opts = "call -v -m"
     compress_cmd = "| bgzip -c" if tx_out_file.endswith(".gz") else ""
+    fix_ambig_ref = vcfutils.fix_ambiguous_cl()
+    fix_ambig_alt = vcfutils.fix_ambiguous_cl(5)
     cmd = ("{mpileup} "
            "| {bcftools} {bcftools_opts} - "
+           "| {fix_ambig_ref} | {fix_ambig_alt} "
            "| vt normalize -n -q -r {ref_file} - "
            "| sed 's/VCFv4.2/VCFv4.1/' "
            "| sed 's/,Version=3>/>/' "

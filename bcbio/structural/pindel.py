@@ -5,8 +5,8 @@ http://gmt.genome.wustl.edu/packages/pindel/
 
 from __future__ import print_function
 import os
+import six
 import time
-import itertools
 import shutil
 from bcbio import bam, utils, broad
 from bcbio.distributed.transaction import file_transaction, tx_tmpdir
@@ -15,7 +15,7 @@ from bcbio.pipeline.shared import subset_variant_regions, remove_lcr_regions
 from bcbio.variation.vcfutils import bgzip_and_index, get_paired_bams
 from bcbio.variation import annotation
 from bcbio.provenance import do
-
+from six.moves import zip
 
 def _pindel_options(items, config, out_file, region, tmp_path):
     """parse pindel options. Add region to cmd.
@@ -29,7 +29,7 @@ def _pindel_options(items, config, out_file, region, tmp_path):
     target = subset_variant_regions(variant_regions, region, out_file, items)
     opts = ""
     if target:
-        if isinstance(target, basestring) and os.path.isfile(target):
+        if isinstance(target, six.string_types) and os.path.isfile(target):
             target_bed = target
         else:
             target_bed = os.path.join(tmp_path, "tmp.bed")
@@ -92,11 +92,7 @@ def _run_tumor_pindel_caller(align_bams, items, ref_file, assoc_files,
             do.run(cmd.format(**locals()), "Genotyping with pindel", {})
             out_file = _create_vcf(root_pindel, out_file, ref_file,
                                    items, paired)
-    ann_file = annotation.annotate_nongatk_vcf(out_file, align_bams,
-                                               assoc_files.get("dbsnp"),
-                                               ref_file, config)
-    return ann_file
-
+    return out_file
 
 def _create_tmp_input(input_bams, names, tmp_path, config):
     """Create input file for pindel. tab file: bam file, insert size, name
@@ -108,7 +104,7 @@ def _create_tmp_input(input_bams, names, tmp_path, config):
     """
     tmp_input = os.path.join(tmp_path, "pindel.txt")
     with open(tmp_input, 'w') as out_handle:
-        for bam_file, name in itertools.izip(input_bams, names):
+        for bam_file, name in zip(input_bams, names):
             print("%s\t%s\t%s\n" % (bam_file, 250, name), file=out_handle)
     return tmp_input
 
@@ -154,6 +150,6 @@ def _filter_paired(tumor, normal, out_file, reference, data):
     with file_transaction(data, out_file) as tx_out_file:
         params = ["-T", "SomaticPindelFilter", "-V", in_file, "-o",
                   tx_out_file, "-TID", tumor, "-NID", normal, "-R", reference]
-        jvm_opts = broad.get_gatk_framework_opts(config)
+        jvm_opts = broad.get_gatk_opts(config)
         do.run(broad.gatk_cmd("gatk-framework", jvm_opts, params), "Filter pindel variants")
     return out_file

@@ -10,15 +10,13 @@ set -eu -o pipefail
 
 mkdir -p config
 cd config
-wget https://raw.github.com/chapmanb/bcbio-nextgen/master/config/examples/NA12878-exome-methodcmp.yaml
+wget https://raw.github.com/bcbio/bcbio-nextgen/master/config/examples/NA12878-exome-methodcmp.yaml
 cd ..
 
 mkdir -p input
 cd input
 wget -c -O NA12878-NGv3-LAB1360-A_1.fastq.gz https://s3.amazonaws.com/bcbio_nextgen/NA12878-NGv3-LAB1360-A_1.fastq.gz
 wget -c -O NA12878-NGv3-LAB1360-A_2.fastq.gz https://s3.amazonaws.com/bcbio_nextgen/NA12878-NGv3-LAB1360-A_2.fastq.gz
-wget -c -O NGv3.bed.gz https://s3.amazonaws.com/bcbio_nextgen/NGv3.bed.gz
-gunzip *.bed.gz
 cd ..
 
 mkdir -p work

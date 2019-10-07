@@ -2,7 +2,7 @@
 """Convert Plink ped/map files into VCF format using plink and Plink/SEQ.
 
 Latest version available as part of bcbio-nextgen:
-https://github.com/chapmanb/bcbio-nextgen/blob/master/scripts/plink_to_vcf.py
+https://github.com/bcbio/bcbio-nextgen/blob/master/scripts/plink_to_vcf.py
 
 Requires:
 
@@ -33,7 +33,7 @@ def main(ped_file, map_file, ref_file):
 
 def convert_to_plink_bed(ped_file, map_file, base_dir):
     # from ubuntu package, 'plink' otherwise
-    for plink_cl in ["p-link", "plink"]:
+    for plink_cl in ["p-link", "plink", "plink2"]:
         try:
             subprocess.check_call([plink_cl, "--help"])
             break

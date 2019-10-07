@@ -9,16 +9,21 @@ from bcbio.log import logger, logger_cl, logger_stdout
 from bcbio.pipeline import datadict as dd
 from bcbio.provenance import diagnostics
 
-def run(cmd, descr, data=None, checks=None, region=None, log_error=True,
-        log_stdout=False):
+
+import six
+
+
+def run(cmd, descr=None, data=None, checks=None, region=None, log_error=True,
+        log_stdout=False, env=None):
     """Run the provided command, logging details and checking for errors.
     """
-    descr = _descr_str(descr, data, region)
-    logger.debug(descr)
-    cmd_id = diagnostics.start_cmd(cmd, descr, data)
+    if descr:
+      descr = _descr_str(descr, data, region)
+      logger.debug(descr)
+    cmd_id = diagnostics.start_cmd(cmd, descr or "", data)
     try:
-        logger_cl.debug(" ".join(str(x) for x in cmd) if not isinstance(cmd, basestring) else cmd)
-        _do_run(cmd, checks, log_stdout)
+        logger_cl.debug(" ".join(str(x) for x in cmd) if not isinstance(cmd, six.string_types) else cmd)
+        _do_run(cmd, checks, log_stdout, env=env)
     except:
         diagnostics.end_cmd(cmd_id, False)
         if log_error:
@@ -48,7 +53,7 @@ def find_bash():
 
 def find_cmd(cmd):
     try:
-        return subprocess.check_output(["which", cmd]).strip()
+        return subprocess.check_output(["which", cmd]).decode().strip()
     except subprocess.CalledProcessError:
         return None
 
@@ -57,7 +62,7 @@ def _normalize_cmd_args(cmd):
     Piped commands set pipefail and require use of bash to help with debugging
     intermediate errors.
     """
-    if isinstance(cmd, basestring):
+    if isinstance(cmd, six.string_types):
         # check for standard or anonymous named pipes
         if cmd.find(" | ") > 0 or cmd.find(">(") or cmd.find("<("):
             return "set -o pipefail; " + cmd, True, find_bash()
@@ -66,17 +71,23 @@ def _normalize_cmd_args(cmd):
     else:
         return [str(x) for x in cmd], False, None
 
-def _do_run(cmd, checks, log_stdout=False):
+def _do_run(cmd, checks, log_stdout=False, env=None):
     """Perform running and check results, raising errors for issues.
     """
     cmd, shell_arg, executable_arg = _normalize_cmd_args(cmd)
-    s = subprocess.Popen(cmd, shell=shell_arg, executable=executable_arg,
-                         stdout=subprocess.PIPE,
-                         stderr=subprocess.STDOUT, close_fds=True)
+    s = subprocess.Popen(
+        cmd,
+        shell=shell_arg,
+        executable=executable_arg,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        close_fds=True,
+        env=env,
+    )
     debug_stdout = collections.deque(maxlen=100)
     while 1:
-        line = s.stdout.readline()
-        if line:
+        line = s.stdout.readline().decode("utf-8", errors="replace")
+        if line.rstrip():
             debug_stdout.append(line)
             if log_stdout:
                 logger_stdout.debug(line.rstrip())
@@ -85,9 +96,9 @@ def _do_run(cmd, checks, log_stdout=False):
         exitcode = s.poll()
         if exitcode is not None:
             for line in s.stdout:
-                debug_stdout.append(line)
+                debug_stdout.append(line.decode("utf-8", errors="replace"))
             if exitcode is not None and exitcode != 0:
-                error_msg = " ".join(cmd) if not isinstance(cmd, basestring) else cmd
+                error_msg = " ".join(cmd) if not isinstance(cmd, six.string_types) else cmd
                 error_msg += "\n"
                 error_msg += "".join(debug_stdout)
                 s.communicate()
@@ -126,8 +137,12 @@ def file_reasonable_size(target_file, input_file):
         # named pipes -- we can't calculate size
         if input_file.strip().startswith("<("):
             return True
-        if input_file.endswith((".bam", ".gz")):
+        if input_file.endswith((".gz")):
             scale = 10.0
+        # bams can be compressed at different levels so use larger scale factor
+        # to account for that potential
+        elif input_file.endswith((".bam")):
+            scale = 25.0
         else:
             scale = 20.0
         orig_size = os.path.getsize(input_file) / pow(1024.0, 3)

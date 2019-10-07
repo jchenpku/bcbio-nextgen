@@ -5,9 +5,11 @@ programs, then extracts resource requirements from the input bcbio_system file.
 """
 import copy
 import math
+import operator
 
 from bcbio.pipeline import config_utils
 from bcbio.log import logger
+from functools import reduce
 
 def _get_resource_programs(progs, algs):
     """Retrieve programs used in analysis based on algorithm configurations.
@@ -22,7 +24,7 @@ def _get_resource_programs(progs, algs):
         if p == "aligner":
             for alg in algs:
                 aligner = alg.get("aligner")
-                if aligner:
+                if aligner and not isinstance(aligner, bool):
                     out.add(aligner)
         elif p in ["variantcaller", "svcaller", "peakcaller"]:
             if p == "variantcaller":
@@ -31,7 +33,9 @@ def _get_resource_programs(progs, algs):
                         out.add(key)
             for alg in algs:
                 callers = alg.get(p)
-                if callers:
+                if callers and not isinstance(callers, bool):
+                    if isinstance(callers, dict):
+                        callers = reduce(operator.add, callers.values())
                     if isinstance(callers, (list, tuple)):
                         for x in callers:
                             out.add(x)
@@ -51,6 +55,8 @@ def _parent_prefix(prefix):
         for alg in algs:
             vcs = alg.get("variantcaller")
             if vcs:
+                if isinstance(vcs, dict):
+                    vcs = reduce(operator.add, vcs.values())
                 if not isinstance(vcs, (list, tuple)):
                     vcs = [vcs]
                 return any(vc.startswith(prefix) for vc in vcs if vc)
@@ -203,6 +209,8 @@ def calculate(parallel, items, sysinfo, config, multiplier=1,
     if cores_per_job == 1:
         memory_per_job = "%.2f" % memory_per_core
         num_jobs, mem_pct = _scale_jobs_to_memory(num_jobs, memory_per_core, sysinfo)
+        # For single core jobs, avoid overscheduling maximum cores_per_job
+        num_jobs = min(num_jobs, total)
     else:
         cores_per_job, memory_per_job, mem_pct = _scale_cores_to_memory(cores_per_job,
                                                                         memory_per_core, sysinfo,

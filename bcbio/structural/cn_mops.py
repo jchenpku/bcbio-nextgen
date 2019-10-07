@@ -10,11 +10,11 @@ import subprocess
 import pysam
 import toolz as tz
 
-from bcbio import bam, install, utils
+from bcbio import bam, utils
 from bcbio.distributed.multi import run_multicore, zeromq_aware_logging
 from bcbio.distributed.transaction import file_transaction
 from bcbio.log import logger
-from bcbio.pipeline import config_utils, shared
+from bcbio.pipeline import shared
 from bcbio.provenance import do
 from bcbio.structural import shared as sshared
 from bcbio.variation import bedutils, vcfutils
@@ -72,7 +72,7 @@ def _prep_sample_cnvs(cnv_file, data):
     import pybedtools
     sample_name = tz.get_in(["rgnames", "sample"], data)
     def make_names(name):
-        return re.sub("[^\w.]", '.', name)
+        return re.sub(r"[^\w.]", '.', name)
     def matches_sample_name(feat):
         return (feat.name == sample_name or feat.name == "X%s" % sample_name or
                 feat.name == make_names(sample_name))
@@ -91,8 +91,7 @@ def _prep_sample_cnvs(cnv_file, data):
 def _run_on_chrom(chrom, work_bams, names, work_dir, items):
     """Run cn.mops on work BAMs for a specific chromosome.
     """
-    local_sitelib = os.path.join(install.get_defaults().get("tooldir", "/usr/local"),
-                                 "lib", "R", "site-library")
+    local_sitelib = utils.R_sitelib()
     batch = sshared.get_cur_batch(items)
     ext = "-%s-cnv" % batch if batch else "-cnv"
     out_file = os.path.join(work_dir, "%s%s-%s.bed" % (os.path.splitext(os.path.basename(work_bams[0]))[0],
@@ -106,7 +105,7 @@ def _run_on_chrom(chrom, work_bams, names, work_dir, items):
                                                 local_sitelib=local_sitelib))
             rscript = utils.Rscript_cmd()
             try:
-                do.run([rscript, rcode], "cn.mops CNV detection", items[0], log_error=False)
+                do.run([rscript, "--vanilla", rcode], "cn.mops CNV detection", items[0], log_error=False)
             except subprocess.CalledProcessError as msg:
                 # cn.mops errors out if no CNVs found. Just write an empty file.
                 if _allowed_cnmops_errorstates(str(msg)):

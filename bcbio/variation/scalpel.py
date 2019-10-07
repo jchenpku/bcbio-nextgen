@@ -20,11 +20,14 @@ from bcbio.provenance import do
 from bcbio.variation import annotation, bedutils, vcfutils
 from bcbio.variation.vcfutils import get_paired_bams, is_paired_analysis, bgzip_and_index
 
+import six
+
+
 def _scalpel_bed_file_opts(items, config, out_file, region, tmp_path):
     variant_regions = bedutils.population_variant_regions(items)
     target = shared.subset_variant_regions(variant_regions, region, out_file, items)
     if target:
-        if isinstance(target, basestring) and os.path.isfile(target):
+        if isinstance(target, six.string_types) and os.path.isfile(target):
             target_bed = target
         else:
             target_bed = os.path.join(tmp_path, "tmp.bed")
@@ -37,7 +40,6 @@ def _scalpel_bed_file_opts(items, config, out_file, region, tmp_path):
                     with open(tx_tmp_bed, "w") as out_handle:
                         print("%s\t%s\t%s" % (chrom, start, end), file=out_handle)
         if any(dd.get_coverage_interval(x) == "genome" for x in items):
-            target_bed = shared.remove_highdepth_regions(target_bed, items)
             target_bed = shared.remove_lcr_regions(target_bed, items)
         return ["--bed", target_bed]
     else:
@@ -121,15 +123,13 @@ def _run_scalpel_caller(align_bams, items, ref_file, assoc_files,
             bcftools_cmd_chi2 = get_scalpel_bcftools_filter_expression("chi2", config)
             sample_name_str = items[0]["name"][1]
             fix_ambig = vcfutils.fix_ambiguous_cl()
+            add_contig = vcfutils.add_contig_to_header_cl(dd.get_ref_file(items[0]), tx_out_file)
             cl2 = ("{bcftools_cmd_chi2} {scalpel_tmp_file} | "
                    r"sed 's/FORMAT\tsample\(_name\)\{{0,1\}}/FORMAT\t{sample_name_str}/g' "
                    "| {fix_ambig} | vcfallelicprimitives -t DECOMPOSED --keep-geno | vcffixup - | vcfstreamsort "
-                   "{compress_cmd} > {tx_out_file}")
+                   "| {add_contig} {compress_cmd} > {tx_out_file}")
             do.run(cl2.format(**locals()), "Finalising Scalpel variants", {})
-    ann_file = annotation.annotate_nongatk_vcf(out_file, align_bams,
-                                               assoc_files.get("dbsnp"),
-                                               ref_file, config)
-    return ann_file
+    return out_file
 
 def _run_scalpel_paired(align_bams, items, ref_file, assoc_files,
                           region=None, out_file=None):
@@ -182,15 +182,12 @@ def _run_scalpel_paired(align_bams, items, ref_file, assoc_files,
             bcftools_cmd_chi2 = get_scalpel_bcftools_filter_expression("chi2", config)
             bcftools_cmd_common = get_scalpel_bcftools_filter_expression("reject", config)
             fix_ambig = vcfutils.fix_ambiguous_cl()
+            add_contig = vcfutils.add_contig_to_header_cl(dd.get_ref_file(items[0]), tx_out_file)
             cl2 = ("vcfcat <({bcftools_cmd_chi2} {scalpel_tmp_file}) "
                    "<({bcftools_cmd_common} {scalpel_tmp_file_common}) | "
-                   " {fix_ambig} | {vcfstreamsort} {compress_cmd} > {tx_out_file}")
+                   " {fix_ambig} | {vcfstreamsort} | {add_contig} {compress_cmd} > {tx_out_file}")
             do.run(cl2.format(**locals()), "Finalising Scalpel variants", {})
-
-    ann_file = annotation.annotate_nongatk_vcf(out_file, align_bams,
-                                               assoc_files.get("dbsnp"), ref_file,
-                                               config)
-    return ann_file
+    return out_file
 
 def get_scalpel_bcftools_filter_expression(filter_type, config):
     bcftools = config_utils.get_program("bcftools", config)

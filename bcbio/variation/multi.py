@@ -4,7 +4,6 @@ Handles grouping of related families or batches to go through variant
 calling simultaneously.
 """
 import collections
-import os
 
 import toolz as tz
 
@@ -121,7 +120,7 @@ def _group_batches_shared(xs, caller_batch_fn, prep_data_fn):
             data = prep_data_fn(data, [data])
             singles.append(data)
     batches = []
-    for batch, items in batch_groups.iteritems():
+    for batch, items in batch_groups.items():
         batch_data = utils.deepish_copy(_pick_lead_item(items))
         # For nested primary batches, split permanently by batch
         if tz.get_in(["metadata", "batch"], batch_data):
@@ -164,7 +163,7 @@ def group_batches_joint(samples):
         for r in ["callable_regions", "variant_regions"]:
             data[r] = list(set(filter(lambda x: x is not None,
                                       [tz.get_in(("config", "algorithm", r), d) for d in items])))
-        data["work_bams"] = [x.get("align_bam", x.get("work_bam")) for x in items]
+        data["work_bams"] = [dd.get_align_bam(x) or dd.get_work_bam(x) for x in items]
         data["vrn_files"] = [x["vrn_file"] for x in items]
         return data
     return _group_batches_shared(samples, _caller_batches, _prep_data)
@@ -201,7 +200,7 @@ def _pick_lead_item(items):
 
     For cancer samples, attach to tumor.
     """
-    if vcfutils.is_paired_analysis([x["align_bam"] for x in items], items):
+    if vcfutils.is_paired_analysis([dd.get_align_bam(x) for x in items], items):
         for data in items:
             if vcfutils.get_paired_phenotype(data) == "tumor":
                 return data
@@ -257,9 +256,8 @@ def split_variants_by_sample(data):
                 sub_data.pop("vrn_file", None)
             out.append([sub_data])
         return out
-    # joint calling or larger runs, do not split back up and keep in batches
-    elif (tz.get_in(("config", "algorithm", "jointcaller"), data)
-          or len(get_orig_items(data)) > 5):
+    # joint calling or population runs, do not split back up and keep in batches
+    else:
         out = []
         for sub_data in get_orig_items(data):
             cur_batch = tz.get_in(["metadata", "batch"], data)
@@ -267,21 +265,5 @@ def split_variants_by_sample(data):
                 sub_data["metadata"]["batch"] = cur_batch
             sub_data["vrn_file_batch"] = data["vrn_file"]
             sub_data["vrn_file"] = data["vrn_file"]
-            out.append([sub_data])
-        return out
-    # population or single sample
-    else:
-        out = []
-        for sub_data in get_orig_items(data):
-            sub_vrn_file = data["vrn_file"].replace(str(data["group"][0]) + "-", str(sub_data["name"][-1]) + "-")
-            if len(vcfutils.get_samples(data["vrn_file"])) > 1:
-                vcfutils.select_sample(data["vrn_file"], str(sub_data["name"][-1]), sub_vrn_file, data["config"])
-            elif not os.path.exists(sub_vrn_file):
-                utils.symlink_plus(data["vrn_file"], sub_vrn_file)
-            cur_batch = tz.get_in(["metadata", "batch"], data)
-            if cur_batch:
-                sub_data["metadata"]["batch"] = cur_batch
-            sub_data["vrn_file_batch"] = data["vrn_file"]
-            sub_data["vrn_file"] = sub_vrn_file
             out.append([sub_data])
         return out

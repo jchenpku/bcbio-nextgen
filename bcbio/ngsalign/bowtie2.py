@@ -12,7 +12,7 @@ from bcbio.pipeline import datadict as dd
 from bcbio.rnaseq import gtf
 from bcbio.ngsalign import alignprep, postalign
 
-def _bowtie2_args_from_config(config):
+def _bowtie2_args_from_config(config, curcl):
     """Configurable high level options for bowtie2.
     """
     qual_format = config["algorithm"].get("quality_format", "")
@@ -22,7 +22,12 @@ def _bowtie2_args_from_config(config):
         qual_flags = []
     num_cores = config["algorithm"].get("num_cores", 1)
     core_flags = ["-p", str(num_cores)] if num_cores > 1 else []
-    return core_flags + qual_flags
+    user_opts = config_utils.get_resources("bowtie2", config).get("options", [])
+    for flag_opt in (o for o in user_opts if str(o).startswith("-")):
+        if flag_opt in curcl:
+            raise ValueError("Duplicate option %s in resources and bcbio commandline: %s %s" %
+                             flag_opt, user_opts, curcl)
+    return core_flags + qual_flags + user_opts
 
 def align(fastq_file, pair_file, ref_file, names, align_dir, data,
           extra_args=None):
@@ -41,7 +46,6 @@ def align(fastq_file, pair_file, ref_file, names, align_dir, data,
     if not utils.file_exists(out_file) and (final_file is None or not utils.file_exists(final_file)):
         with postalign.tobam_cl(data, out_file, pair_file is not None) as (tobam_cl, tx_out_file):
             cl = [config_utils.get_program("bowtie2", config)]
-            cl += _bowtie2_args_from_config(config)
             cl += extra_args if extra_args is not None else []
             cl += ["-q",
                    "-x", ref_file]
@@ -55,8 +59,9 @@ def align(fastq_file, pair_file, ref_file, names, align_dir, data,
                 for key, tag in [("sample", "SM"), ("pl", "PL"), ("pu", "PU"), ("lb", "LB")]:
                     if names.get(key):
                         cl += ["--rg", "%s:%s" % (tag, names[key])]
+            cl += _bowtie2_args_from_config(config, cl)
             cl = [str(i) for i in cl]
-            cmd = " ".join(cl) + " | " + tobam_cl
+            cmd = "unset JAVA_HOME && " + " ".join(cl) + " | " + tobam_cl
             do.run(cmd, "Aligning %s and %s with Bowtie2." % (fastq_file, pair_file))
     return out_file
 
@@ -79,7 +84,7 @@ def filter_multimappers(align_file, data):
     type_flag = "" if bam.is_bam(align_file) else "S"
     base, ext = os.path.splitext(align_file)
     out_file = base + ".unique" + ext
-    bed_file = dd.get_variant_regions(data)
+    bed_file = dd.get_variant_regions(data) or dd.get_sample_callable(data)
     bed_cmd = '-L {0}'.format(bed_file) if bed_file else " "
     if utils.file_exists(out_file):
         return out_file
@@ -139,7 +144,7 @@ def align_transcriptome(fastq_file, pair_file, ref_file, data):
     fastq_cmd = "-1 %s" % fastq_file if pair_file else "-U %s" % fastq_file
     pair_cmd = "-2 %s " % pair_file if pair_file else ""
     cmd = ("{bowtie2} -p {num_cores} -a -X 600 --rdg 6,5 --rfg 6,5 --score-min L,-.6,-.4 --no-discordant --no-mixed -x {gtf_index} {fastq_cmd} {pair_cmd} ")
-    with file_transaction(out_file) as tx_out_file:
+    with file_transaction(data, out_file) as tx_out_file:
         message = "Aligning %s and %s to the transcriptome." % (fastq_file, pair_file)
         cmd += "| " + postalign.sam_to_sortbam_cl(data, tx_out_file, name_sort=True)
         do.run(cmd.format(**locals()), message)

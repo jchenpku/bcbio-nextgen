@@ -1,19 +1,29 @@
 Citations
 ---------
 
-https://github.com/chapmanb/bcbio-nextgen
+https://github.com/bcbio/bcbio-nextgen
 
 small RNA-seq
 =============
 
-Download BIB format: https://github.com/chapmanb/bcbio-nextgen/tree/master/docs/contents/misc/bcbio-smallrna.bib
+Data was analyzed with bcbio-nextgen (https://github.com/bcbio/bcbio-nextgen)
+using piDNA to detect the adapter, cutadapt to remove it, STAR/bowtie to align against
+the genome and seqcluster to detect small RNA transcripts. miRNAs were detected using
+miraligner tool with miRBase as the reference miRNA database. tRNA profiles were
+detected using tdrmapper tool. mirdeep2 was used for discovery of novel miRNAs. FastQC
+was used for QC metrics and multiqc for reporting.
+
+Download BIB format: https://github.com/bcbio/bcbio-nextgen/tree/master/docs/contents/misc/bcbio-smallrna.bib
 
 Tools
 ~~~~~
 
+* Tsuji J, Weng Z. (2016) DNApi: A De Novo Adapter Prediction Algorithm for Small
+  RNA Sequencing Data. 11(10):e0164228. http://journals.plos.org/plosone/article?id=10.1371/journal.pone.0164228
+
 * Andrews, S. (2010). FastQC: A quality control tool for high throughput sequence data. Bioinformatics. doi:citeulike-article-id:11583827
 
-* Martin, M. (2011). Cutadapt removes adapter sequences from high-throughput sequencing reads. EMBnet.journal, 17(1), 10. doi:10.14806/ej.17.1.200
+* Didion, J. P., Martin, M., & Collins, F. S. (2017). Atropos: specific, sensitive, and speedy trimming of sequencing reads. http://doi.org/10.7287/peerj.preprints.2452v4
 
 * Dale, R. K., Pedersen, B. S., & Quinlan, A. R. (2011). Pybedtools: A flexible Python library for manipulating genomic datasets and annotations. Bioinformatics, 27(24), 3423–3424. doi:10.1093/bioinformatics/btr539
 
@@ -36,7 +46,16 @@ For the alignment, add what you have used:
 
 * Dobin, A., Davis, C. A., Schlesinger, F., Drenkow, J., Zaleski, C., Jha, S., … Gingeras, T. R. (2013). STAR: Ultrafast universal RNA-seq aligner. Bioinformatics, 29(1), 15–21. doi:10.1093/bioinformatics/bts635
 
-* Langmead, B., Trapnell, C., Pop, M., & Salzberg, S. L. (2009). Ultrafast and memory-efficient alignment of short DNA sequences to the human genome. Genome Biol, 10, R25. doi:10.1186/gb-2009-10-3-r25
+* Langmead, B., Trapnell, C., Pop, M., & Salzberg, S. L. (2009). Ultrafast and memory-efficient alignment of short DNA sequences to the human genome. Genome Biology, 10, R25. doi:10.1186/gb-2009-10-3-r25
+
+* Kim, D., Langmead, B. & Salzberg, SL. (2016). HISAT: a fast spliced aligner with low memory requirements. Nature Methods, 12(4): 357–360. doi: 10.1038/nmeth.3317
+
+
+If you used TopHat2 for alignment:
+
+* Kim, D., Pertea, G., Trapnell, C., Pimentel, H., Kelley, R. & Salzberg SL. (2013). TopHat2: accurate alignment of transcriptomes in the presence of insertions, deletions and gene fusions. Genome Biology, 14(4): R36. doi: 10.1186/gb-2013-14-4-r36
+
+* Brueffer, C. & Saal, LH. (2016). TopHat-Recondition: A post-processor for TopHat unmapped reads. BMC Bioinformatics, 17(1):199. doi: 10.1186/s12859-016-1058-x
 
 
 If you have in the output novel miRNA discovering, add: 
@@ -46,6 +65,14 @@ If you have in the output novel miRNA discovering, add:
 If you have tRNA mapping output, add:
 
 * Selitsky, S. R., & Sethupathy, P. (2015). tDRmapper: challenges and solutions to mapping, naming, and quantifying tRNA-derived RNAs from human small RNA-sequencing data. BMC Bioinformatics, 16(1), 354. doi:10.1186/s12859-015-0800-0
+
+If you have miRge activated:
+
+* Yin Lu, Alexander S. Baras, Marc K Halushka. miRge2.0: An updated tool to comprehensively analyze microRNA sequencing data. bioRxiv.org.
+
+If you have MINTmap activated:
+
+* Loher, P, Telonis, AG, Rigoutsos, I. MINTmap: fast and exhaustive profiling of nuclear and mitochondrial tRNA fragments from short RNA-seq data. Sci Rep. 2017;7 :41184. doi: 10.1038/srep41184. PubMed PMID:28220888 PubMed Central PMC5318995.
 
 Data
 ~~~~

@@ -10,9 +10,13 @@ import subprocess
 from bcbio import bam, utils
 from bcbio.ngsalign import alignprep, postalign
 from bcbio.pipeline import config_utils
+from bcbio.pipeline import datadict as dd
 from bcbio.provenance import do
 from bcbio.distributed.transaction import tx_tmpdir
 from bcbio.utils import (memoize_outfile, file_exists)
+
+import six
+
 
 # ## BAM realignment
 
@@ -40,7 +44,8 @@ def align_bam(in_bam, ref_file, names, align_dir, data):
                 rg_info = get_rg_info(names)
                 tx_out_prefix = os.path.splitext(tx_out_file)[0]
                 prefix1 = "%s-in1" % tx_out_prefix
-                cmd = ("{samtools} sort -n -o -l 1 -@ {num_cores} -m {max_mem} {in_bam} {prefix1} "
+                cmd = ("unset JAVA_HOME && "
+                       "{samtools} sort -n -o -l 1 -@ {num_cores} -m {max_mem} {in_bam} {prefix1} "
                        "| {novoalign} -o SAM '{rg_info}' -d {ref_file} -f /dev/stdin "
                        "  -F BAMPE -c {num_cores} {extra_novo_args} | ")
                 cmd = (cmd + tobam_cl).format(**locals())
@@ -75,7 +80,8 @@ def align_pipe(fastq_file, pair_file, ref_file, names, align_dir, data):
         with tx_tmpdir(data) as work_dir:
             with postalign.tobam_cl(data, out_file, pair_file != "") as (tobam_cl, tx_out_file):
                 tx_out_prefix = os.path.splitext(tx_out_file)[0]
-                cmd = ("{novoalign} -o SAM '{rg_info}' -d {ref_file} -f {fastq_file} {pair_file} "
+                cmd = ("unset JAVA_HOME && "
+                       "{novoalign} -o SAM '{rg_info}' -d {ref_file} -f {fastq_file} {pair_file} "
                        "  -c {num_cores} {extra_novo_args} | ")
                 cmd = (cmd + tobam_cl).format(**locals())
                 do.run(cmd, "Novoalign: %s" % names["sample"], None,
@@ -94,7 +100,7 @@ def _novoalign_args_from_config(config, need_quality=True):
     multi_mappers = config["algorithm"].get("multiple_mappers")
     if multi_mappers is True:
         multi_flag = "Random"
-    elif isinstance(multi_mappers, basestring):
+    elif isinstance(multi_mappers, six.string_types):
         multi_flag = multi_mappers
     else:
         multi_flag = "None"

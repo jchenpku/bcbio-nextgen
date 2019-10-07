@@ -7,6 +7,7 @@ Supported:
 from __future__ import print_function
 import os
 import pysam
+import toolz as tz
 
 from bcbio.utils import file_exists
 from bcbio.distributed.transaction import file_transaction
@@ -20,7 +21,7 @@ from bcbio.log import logger
 def run(data):
     if not aligner_supports_fusion(data):
         aligner = dd.get_aligner(data)
-        logger.warning("Fusion mode is not supported for the %s aligner, "
+        logger.warning("Oncofuse is not supported for the %s aligner, "
                        "skipping. " % aligner)
         return None
     config = data["config"]
@@ -28,9 +29,11 @@ def run(data):
     input_type, input_dir, input_file = _get_input_para(data)
     if genome_build == "GRCh37":  # assume genome_build is hg19 otherwise
         if config["algorithm"].get("aligner") in ["star"]:
-            input_file = _fix_star_junction_output(input_file)
+            if file_exists(input_file):
+                input_file = _fix_star_junction_output(input_file)
         if config["algorithm"].get("aligner") in ["tophat", "tophat2"]:
-            input_file = _fix_tophat_junction_output(input_file)
+            if file_exists(input_file):
+                input_file = _fix_tophat_junction_output(input_file)
     elif "hg19" not in genome_build:
         return None
     #handle cases when fusion file doesn't exist
@@ -149,10 +152,17 @@ def _oncofuse_tissue_arg_from_config(data):
     AVG (average expression, if tissue source is unknown).
     """
     SUPPORTED_TISSUE_TYPE = ["EPI", "HEM", "MES", "AVG"]
-    if data.get("metadata", {}).get("tissue") in SUPPORTED_TISSUE_TYPE:
-        return data.get("metadata", {}).get("tissue")
+    tissue_type = tz.get_in(("metadata", "tissue"), data, None)
+    if not tissue_type:
+        logger.info("Oncofuse: tissue type not set, using average expression (AVG).")
+        tissue_type = "AVG"
+    elif tissue_type not in SUPPORTED_TISSUE_TYPE:
+        logger.info("Oncofuse: %s not a supported tissue type, using average "
+                    "expression (AVG)." % tissue_type)
+        tissue_type = "AVG"
     else:
-        return "AVG"
+        logger.info("Oncofuse: using %s as tissue type." % tissue_type)
+    return tissue_type
 
 def _disambiguate_star_fusion_junctions(star_junction_file, contamination_bam, disambig_out_file, data):
     """ Disambiguate detected fusions based on alignments to another species.

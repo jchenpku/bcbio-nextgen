@@ -10,8 +10,8 @@ provides a shared community resource that handles the data processing component
 of sequencing analysis, providing researchers with more time to focus on the
 downstream biology.
 
-.. image:: https://travis-ci.org/chapmanb/bcbio-nextgen.png
-    :target: https://travis-ci.org/chapmanb/bcbio-nextgen
+.. image:: https://travis-ci.org/bcbio/bcbio-nextgen.png
+    :target: https://travis-ci.org/bcbio/bcbio-nextgen
 
 Features
 --------
@@ -55,7 +55,7 @@ Quick start
 
 1. `Install`_ ``bcbio-nextgen`` with all tool dependencies and data files::
 
-         wget https://raw.github.com/chapmanb/bcbio-nextgen/master/scripts/bcbio_nextgen_install.py
+         wget https://raw.github.com/bcbio/bcbio-nextgen/master/scripts/bcbio_nextgen_install.py
          python bcbio_nextgen_install.py /usr/local/share/bcbio --tooldir=/usr/local \
            --genomes GRCh37 --aligners bwa --aligners bowtie2
 
@@ -74,8 +74,8 @@ Quick start
          cd project1/work
          bcbio_nextgen.py ../config/project1.yaml -n 8
 
-.. _system configuration file: https://github.com/chapmanb/bcbio-nextgen/blob/master/config/bcbio_system.yaml
-.. _sample description file: https://github.com/chapmanb/bcbio-nextgen/blob/master/config/bcbio_sample.yaml
+.. _system configuration file: https://github.com/bcbio/bcbio-nextgen/blob/master/config/bcbio_system.yaml
+.. _sample description file: https://github.com/bcbio/bcbio-nextgen/blob/master/config/bcbio_sample.yaml
 .. _Automatically create a processing description: https://bcbio-nextgen.readthedocs.org/en/latest/contents/configuration.html#automated-sample-configuration
 .. _Install: https://bcbio-nextgen.readthedocs.org/en/latest/contents/installation.html#automated
 .. _configuration options: https://bcbio-nextgen.readthedocs.org/en/latest/contents/configuration.html
@@ -88,7 +88,7 @@ See the `full documentation`_ and `longer analysis-based articles
 and discussion on the `biovalidation mailing list`_.
 
 .. _full documentation: https://bcbio-nextgen.readthedocs.org
-.. _GitHub: https://github.com/chapmanb/bcbio-nextgen/issues
+.. _GitHub: https://github.com/bcbio/bcbio-nextgen/issues
 .. _biovalidation mailing list: https://groups.google.com/d/forum/biovalidation
 
 Contributors
@@ -103,13 +103,15 @@ Contributors
 - `Brad Chapman`_, Harvard Chan Bioinformatics Core
 - `Saket Choudhary`_, University Of Southern California
 - `Peter Cock`_, The James Hutton Institute
+- `Matthias De Smet <https://github.com/matthdsm>`_, Center for Medical Genetics, Ghent University Hospital, Belgium
 - `Matt Edwards`_, MIT
 - `Mario Giovacchini`_, Science for Life Laboratory, Stockholm
 - `Karl Gutwin <https://twitter.com/kgutwin>`_, Biogen
 - `Jeff Hammerbacher`_, Icahn School of Medicine at Mount Sinai
-- `Oliver Hofmann <https://github.com/ohofmann>`_, Wolfson Wohl Cancer Research Center
+- `Oliver Hofmann <https://umccr.github.io/>`_, University of Melbourne Centre for Cancer Research
 - `John Kern <https://github.com/kern3020>`_
 - `Rory Kirchner`_, Harvard Chan Bioinformatics Core
+- `Tetiana Khotiainsteva <https://github.com/tetianakh>`_, Ardigen
 - `Jakub Nowacki`_, AstraZeneca
 - `John Morrissey <https://github.com/jwm>`_, Harvard Chan Bioinformatics Core
 - `Lorena Pantano <https://github.com/lpantano>`_, Harvard Chan Bioinformatics Core
@@ -117,6 +119,7 @@ Contributors
 - `James Porter`_, The University of Chicago
 - `Valentine Svensson`_, Science for Life Laboratory, Stockholm
 - `Paul Tang`_, UCSF
+- `Stephen Turner`_, University of Virginia
 - `Roman Valls`_, Science for Life Laboratory, Stockholm
 - `Kevin Ying`_, Garvan Institute of Medical Research, Sydney, Australia
 - `Vlad Saveliev`_, Center for Algorithmic Biotechnology, St. Petersburg University
@@ -136,6 +139,7 @@ Contributors
 .. _James Porter: https://github.com/porterjamesj
 .. _Valentine Svensson: https://github.com/vals
 .. _Paul Tang: https://github.com/tanglingfung
+.. _Stephen Turner: https://github.com/stephenturner
 .. _Roman Valls: https://github.com/brainstorm
 .. _Kevin Ying: https://github.com/kevyin
 .. _Jeff Hammerbacher: https://github.com/hammer

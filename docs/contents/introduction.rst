@@ -15,7 +15,7 @@ of high throughput sequencing data with the goal of being:
   heterogeneous compute environments.
 
 - Reproducible: Track configuration, versions, provenance and command
-  lines to enable debugging, extensive and reproducibility of results.
+  lines to enable debugging, extension and reproducibility of results.
 
 - Community developed: The development process is fully open and
   sustained by contributors from multiple institutions. By working
@@ -123,3 +123,8 @@ your own research.
 .. _Gifford lab: http://cgs.csail.mit.edu/
 .. _SysCode: http://syscode.org/
 .. _stemcell.mit.edu: http://stemcell.mit.edu/
+
+
+- `Sheffield Bioinformatics Core, The University of Sheffield`_: The Sheffield Bioinformatics Core is a relatively new Core facility at The University of Sheffield, and bcbio has been instrumental in setting-up a best-practice Bioinformatics analysis service. We employ bcbio to automate the analyses of RNA-seq, small RNA and ChiP-Seq datasets for researchers at The University of Sheffield and NIHR Biomedical Research Centre. In conjunction with the bcbioRNASeq Bioconductor package, we deliver publication-quality reports to our researchers based on reproducible analyses.
+  
+  .. _Sheffield Bioinformatics Core, The University of Sheffield: http://sbc.shef.ac.uk

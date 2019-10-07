@@ -54,21 +54,25 @@ def run_stringtie_expression(data):
     gene_fpkm = os.path.join(out_dir, sample_name + ".fpkm")
     assembly = os.path.abspath(os.path.join(out_dir, "stringtie-assembly.gtf"))
     if file_exists(isoform_fpkm) and file_exists(gene_fpkm):
-        data = dd.set_cufflinks_dir(data, out_dir)
+        data = dd.set_stringtie_dir(data, out_dir)
         data = dd.set_fpkm(data, gene_fpkm)
         data = dd.set_fpkm_isoform(data, isoform_fpkm)
         if "stringtie" in dd.get_transcript_assembler(data):
-            dd.get_assembled_gtf(data).append(assembly)
+            assembled_gtfs = dd.get_assembled_gtf(data)
+            assembled_gtfs.append(assembly)
+            data = dd.set_assembled_gtf(data, assembled_gtfs)
         return data
     with file_transaction(data, out_dir) as tx_out_dir:
         transcript_file = _stringtie_expression(bam, data, tx_out_dir)
         df = _parse_ballgown(transcript_file)
         _write_fpkms(df, tx_out_dir, sample_name)
-    data = dd.set_cufflinks_dir(data, out_dir)
+    data = dd.set_stringtie_dir(data, out_dir)
     data = dd.set_fpkm(data, gene_fpkm)
     data = dd.set_fpkm_isoform(data, isoform_fpkm)
     if "stringtie" in dd.get_transcript_assembler(data):
-        dd.get_assembled_gtf(data).append(assembly)
+        assembled_gtfs = dd.get_assembled_gtf(data)
+        assembled_gtfs.append(assembly)
+        data = dd.set_assembled_gtf(data, assembled_gtfs)
     return data
 
 def _write_fpkms(df, out_dir, sample_name):
@@ -82,7 +86,7 @@ def _write_fpkms(df, out_dir, sample_name):
     return transcript_file, gene_file
 
 def _parse_ballgown(in_file):
-    return(pd.DataFrame.from_csv(in_file, header=0, sep="\t"))
+    return(pd.read_csv(in_file, header=0, sep="\t"))
 
 def merge(to_merge, ref_file, gtf_file, num_cores, data):
     stringtie = config_utils.get_program("stringtie", data, default="stringtie")
@@ -104,7 +108,7 @@ def version(data):
                             shell=True)
     with contextlib.closing(subp.stdout) as stdout:
         for line in stdout:
-            version = line.strip()
+            version = line.decode().strip()
     return LooseVersion(version)
 
 def supports_merge(data):

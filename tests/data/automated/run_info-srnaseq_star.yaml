@@ -1,7 +1,7 @@
 upload:
   dir: upload
 fc_date: '150803'
-fc_name: miRQC
+fc_name: miRQCa
 details:
   - analysis: smallRNA-seq
     algorithm:
@@ -10,9 +10,10 @@ details:
       # aligner: hisat2
       adapters: ["TGGAATTCTCGGGTGC"]
       species: hsa
+      expression_caller: [trna, seqcluster, mirdeep2]
     description: miRQCa
     files:
-      - ../data/test_srnaseq/mirqca.fastq
+      - mirqca.fastq
     genome_build: hg19
     metadata:
       type: mirqc

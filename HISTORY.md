@@ -1,4 +1,574 @@
-## 1.0.0 (in progress)
+## 1.1.6 (in progress)
+
+- GATK ApplyBQSRSpark: avoid StreamClosed issue with GATK 4.1+
+- RNA-seq: fixes for cufflinks preparation due to python3 transition.
+- RNA-seq: output count tables from tximport for genes and transcripts. These
+are in `bcbioRNASeq/results/date/genes/counts` and 
+`bcbioRNASeq/results/data/transcripts/counts`.
+- qualimap (RNA-seq): disable stranded mode for qualimap, as it gives incorrect
+results with the hisat2 aligner and for RNA-seq just setting it to unstranded
+- Add `quantify_genome_alignments` option to use genome alignments to quantify
+  with Salmon.
+- Add `--validateMappings` flag to Salmon read quantification mode.
+- VEP cache is not installing anymore from bcbio run
+- Add support for Salmon SA method when STAR alignments are not available 
+  (for hg38).
+- Add support for the new read model for filtering in Mutect2. This is
+  experimental, and a little flaky, so it can optionally be turned on via:
+  `tools_on: mutect2_readmodel`. Thanks to @lbeltrame for implementing this
+  feature and doing a ton of work debugging.
+- Swap pandas `from_csv` call to `read_csv`.
+- Make STAR respect the `transcriptome_gtf` option.
+- Prefix regular expression with r. Thanks to @smoe for finding all of these.
+- Add informative logging messages at beginning of bcbio run. Includes the version
+  and the configuration files being used.
+- Swap samtools mpileup to use bcftools mpileup as samtools mpileup is being 
+  deprecated (https://github.com/samtools/samtools/releases/tag/1.9).
+- Ensure locale is set to one supporting UTF-8 bcbio-wide. This may need to get
+  reverted if it introduces issues.
+- Added hg38 support for STAR. We did this by taking hg38 and removing the alts,
+  decoys and HLA sequences.
+- Added support for the arriba fusion caller.
+- Added back missing programs from the version provenance file. Fixed formatting
+  problems introduced by switch to python3.
+- Added initial support for whole genome bisulfite sequencing using bismark. Thanks to
+  @hackdna for implementing this and @jnhutchinson for drafting the initial
+  pipeline. This is a work in progress in collaboration with @gcampanella, who
+  has a similar implementation with some extra features that we will be merging
+  in soon.
+- qualimap for RNA-seq runs on the downsampled BAM files by default. Set 
+  `tools_on: [qualimap_full]` to run on the full BAM files.
+- Add STAR junction files to the files captured at the end of a run.
+  
+## 1.1.5 (12 April 2019)
+
+- Fixes for Python3 incompatibilities on distributed IPython runs.
+- Numerous smaller Python3 incompatibilities with strings/unicode and types.
+  Thanks to the community for reporting these.
+- GATK HaplotypeCaller: correctly apply skipping of marked duplicates only
+  for amplicon runs. Thanks to Ben Liesfeld.
+- Fix format detection for bzip2 fastq inputs.
+- Support latest GATK4 MuTect2 (4.1.1.0) with changes to ploidy and reference
+  parameters.
+- Support changes to GATK4 for VQSR --resource specification in 4.1.1.0. Thanks
+  to Timothee Cezard.
+- Support latest bedtools (2.28.0) which expects SAM heads for bgzipped BED
+  inputs.
+
+## 1.1.4 (3 April 2019)
+
+- Move to Python 3.6. A python2 environment in the install runs non python3
+  compatible programs. The codebase is still compatible with python 2.7 but
+  will only get run and tested on python 3 for future releases.
+- RNA-seq: fix for race condition when creating the pizzly cache
+- RNA-seq: Add Salmon to multiqc report.
+- RNA-seq single-cell/DGE: Properly strip transcript versions from GENCODE GTFs.
+- RNA-seq: Faster and more flexible rRNA biotype lookup.
+- Move to R3.5.1, including updates to all CRAN and Bioconductor packages.
+- tumor-only germline prioritization: provide more useful germline filtering
+  based on prioritization INFO tag (EPR) rather than filter field.
+- Install: do not require fabric for tool and data installs, making full codebase
+  compatible with python 3.
+- variant: Filter out variants with missing ALT alleles output by GATK4.
+- GATK: enable specification of spark specific parameters with `gatk-spark`
+  resources.
+- RNA-seq single-cell/DGE: added `demultiplexed` option. If set to True, treat the
+  data as if it has already been demultiplexed into cells/wells.
+- Multiple orders of magnitude faster templating with thousands of input files.
+
+## 1.1.3 (29 January 2019)
+
+- CNV: support background inputs for CNVkit, GATK4 CNV and seq2c. Allows
+  pre-computed panel of normals for tumor-only or single sample CNV calling.
+- variant: avoid race condition on processing input BED files for variant
+  calling when no pre-specific variant_regions available.
+- structural variation upload: avoid uploading multiple batched calls into
+  sample directories. For lumpy will now have a single output per batch in a
+  sample folder.
+- install: respect pre-specified bioconda and conda-forge in condarc
+  configuration. Allows use of custom package mirrors.
+- seq2c: move specialized pre-call calculation upstream to coverage estimation.
+  Allows use of seq2c in CWL runs.
+- MultiQC upload: fix bug where results from parallel run not moved to final
+  directory.
+- GATK4 CNV: fix for standardize VCF output, correcting number of columns.
+- RNA-seq variation: fix for over-filtering variants near splice junctions with
+  STAR.
+- Structural variant gene annotation: simplify and handle issues with
+  multidirectional comparisons. Handle issues with out of order start/end from CNVkit.
+- Catch and report unicode characters in templating or YAML descriptions.
+
+## 1.1.2 (12 December 2018)
+
+- VarDict low frequency somatic filters: generalize strand and mismatch based
+  filter based on cross-validation to avoid over filtering on high depth panels.
+- strelka2 joint calling: switch to improved gvcfgenotyper approach for calling
+  from gVCFs.
+- Heterogeneity: initial support for PureCN and TitanCNA heterogeneity analysis
+  including reporting on LOH in HLA for human samples. Work in progress validations:
+  https://github.com/bcbio/bcbio_validations/tree/master/TCGA-heterogeneity
+- CNV: initial support for GATK4 CNV calling as alternative to CNVkit for
+  tumor normal analyses
+- VarDict RNA-seq variant calling: avoid structural variants with recent vardict-java.
+- RNA-seq variation: filter RNA-seq variants close to splice junctions,
+  supporting STAR and hisat2.
+- RNA-seq variation: add snpEff effects to output variant calls. Thanks to Manasa Surakala.
+- RNA-seq: gzip/bgzip FASTQ files in `work/fastq` instead of the original directory.
+- use biobambam2 BAM to FASTQ conversion instead of Picard in all cases.
+- Trimming: add built-in support for adapters from the SMARTer Universal Low Input RNA Kit
+(truseq2) and the Illumina NEXTera DNA prep kit from NEB (nextera2).
+- ChIP/ATAC-seq: allow skipping duplicate marking.
+- joint calling: ensure correct upload to final directory when no annotations present
+- Logging: fix logging in parallel runs with new joblib loky backend. Thanks to
+  Ben Liesfeld and Roland Ewald.
+
+## 1.1.1 (6 November 2018)
+
+- single-cell RNA-seq: add built-in support for 10x_v2.
+- Fix UMI support for small RNA. Compatible with Qiagen UMI small RNA protocol.
+- Ignore .Renviron when running Rscript to head-off PATH conflicts.
+- Support SRR ids to download samples with bcbio_prepare_samples script.
+- tumor-only prioritization: do not apply LowPriority filter by default, instead
+  annotate with external databases. Use `tumoronly_germline_filter` to re-enable
+  previous behavior.
+- UMIs: apply default filtering based on de-duplicated read depth. Uses
+`--min-reads 2` with raw de-duplicated coverage of 800 or more  or `--min-reads 1`
+  otherwise. Allows error correction with UMIs for higher depth samples.
+- gemini: databases no longer created by default. Use `tools_on: [gemini]` or
+  `tools_on: [gemini_orig]` to create a database. We now use a reduced database
+  for build 37 to match build 38 and make this forward compatible with CWL.
+- vcfanno: run gemini and somatic annotations by default, producing annotated
+  VCFs with external information.
+- alignment preparation: support a list of split files from multiple sequencing
+  lanes, merging into a single fastq
+- variant: support octopus variant caller for germline and somatic samples.
+- peddy: fix bug where not all files uploaded on first pipeline run
+- peddy: For somatic analyses use separate germline calls for tumor/normal, if
+  available, or extracted germline calls from supported callers, instead of
+  somatic variants.
+- GATK: support ploidy specification during joint calling.
+- GATK BQSR: bin qualities into static groups (10, 20, 30) to match GATK4
+  recommendations. Thanks to Severine Catreux.
+- GATK: support 4.0.10.0 which does not use UCSC 2bit references for Spark tools
+- variant calling: support bcftools 1.9 which is more strict about duplicated
+  key names in INFO and FORMAT.
+- seq2c: Upload global calls, coverage and read_mapping files to project directory.
+- RNA-seq variant calling: Apply annotations after joint calling for GATK to
+  avoid import errors with GenomicsDB. Thanks to Komal Rathi.
+- CWL: add `--cwl` target to bcbio_nextgen.py upgrade to add and maintain bcbio-vm.
+- CWL: use standard null instead of string "null" for representing None values.
+- CWL: support for heterogeneity and structural variant callers that make
+  use of variant inputs.
+- CWL: support ensemble calling for combining multiple variant callers.
+- ensemble: remove no-ALT ref calls that contribute to incorrect ensemble outputs
+- RNA-seq: output a matrix of un-deduped UMI counts when doing single-cell/DGE
+  for quality control purposes. This is called `tagcounts-dupes.mtx` in the
+  final directory.
+- single-cell RNA-seq: allow pre-transformed FASTQ files as input to DGE/single-cell
+  pipeline.
+- single-cell RNA-seq: only create one index per specified genome instead of per
+  sample
+- fgbio: back compatibility for older quality setting `--min-consensus-base-quality`
+- RNA-seq: fix for `fusion_caller` getting interpreted as a path, leading to
+  memoization/upload issues.
+- RNA-seq: memoize rRNA quality calculations, speeding up reruns.
+- RNA-seq: prefix `description` with an X if it starts with a number, for R
+  compatibility.
+  Thanks to Avinash Reddy and Dan Stetson at AstraZeneca.
+- single-cell RNA-seq: respect `--positional` flag with the new tag counting. Thanks to
+  Babak Alaei at AstraZeneca.
+- RNA-seq: turn on `--seqBias` flag by default for Salmon as early-version overfitting
+  issues have been fixed.
+- RNA-seq: report insert size from Salmon fragment distribution, not samtools stats.
+- RNA-seq: when processing explant samples, produce a combined tx2gene.csv file from
+  all organisms processed.
+
+## 1.1.0 (11 July 2018)
+
+- Germline calls: rename outputs to `samplename-germline` to provide easier
+  to understand outputs in final directory.
+- Add bcbioRNASeq object creation and automatic quality report generation
+  with `tools_on: [bcbiornaseq]`
+- CWL: Support germline/somatic calling for tumor samples.
+- CNVkit: improve whole genome runs. Better speed in normalize_sv_coverage
+  through parallelization and avoiding logging. Avoid memory errors in segmentation.
+- UMI: upload prepared UMI bam file (pre-consensus) to final output directory
+- Add support for bbmap as an aligner
+- RNA-seq variant calling: parallelize GATK HaplotypeCaller over regions to
+  avoid memory and timeout issues.
+- Support joint calling with GATK using pre-prepared gVCF inputs.
+- RNA-seq variant calling: allow annotation of output variants with vcfanno
+- Support hg38 builds with peddy QC
+- QC: support VerifyBamID2 for contamination detection
+- CWL: adjust defaults for align_split_size and nomap_split_targets to match
+  different parallelization and overhead for these runs
+- CWL: support for Cromwell runner
+- custom genomes: Unzip GTF file prior to installation.
+- Avoid making variant_regions required during processing (by filling with
+  coverage) to differentiate targeted and non analyses downstream.
+- Avoid attempts to download pre-installed S3 genomes, providing better
+  errors with missing genome installs.
+- Trimming: add explicit `polyg` option for removing 3' G stretches in NovaSeq
+  and NextSeq data. Now defaults to no polyG trimming unless turned on.
+- Chip-seq: Add RiP calculation for chip-seq data.
+- DeepVariant and Strelka2 support for customized targeted/genome calling models
+  per region to handle heterogeneous inputs.
+- STAR: enable passing custom options for alignment.
+- Add `tools_off: [coverage_qc]` option to skip calculating coverage stats (samtools-stats and picard).
+- Adding BAM file for each sample in small-RNAseq pipeline, samtools
+  and qualimap qc metrics to multiqc report.
+- Allow arbitrary genomes for ChIP-seq. Thanks to @evchambers for pointing out the issue.
+
+## 1.0.9 (10 April 2018)
+
+- Use smoove for lumpy variant calling and genotyping, replacing custom lumpyexpress
+  implementation: [validation](https://github.com/bcbio/bcbio_validations/tree/master/NA24385_sv#smoove-validation)
+- Generalize exclusion of regions during variant calling with new
+  `exclude_regions` target. Includes previously available LCR and high depth
+  regions, in addition to removal of polyX and alternative contigs.
+- Normalize allele frequency calculation and filtering for Strelka2 and MuTect2.
+  Thanks to Vlad Saveliev.
+- CNVkit: enable specification of pre-built reference background cnn with
+  `background: cnv_reference`.
+- CNVkit: handle projects with mixed CNVkit and non-CNVkit usage. Thanks to Luca
+  Beltrame.
+- Improved Atropos trimming: better use of multicore parallelization in variant
+  and RNA-seq pipelines.
+- Add support for polyG and polyX trimming to variant calling for NovaSeq 3' end
+  cleanup and generally avoiding low complexity reads.
+- Structural variant: use SURVIVOR for validation comparisons.
+- RNA-seq variant calling: use multiple cores for VarDict.
+- Support miRge2.0 for alternative small RNA annotation. Users should
+  install the tool manually until compatible with bioconda.
+- Add bamCoverage to chip-seq pipeline to calculate bigwig files.
+- GATK4: Correctly use GATK4 GatherVcfs when tools_off: [gatk4] specified for
+  variant calling. Thanks to Luca Beltrame.
+- variant: Default to `mark_duplicates: false` if alignment turned off
+  (`aligner: false`).
+- variant: Fix race condition when preparing BED files for coverage and
+  sv_regions. Thanks to Tristan Lubinski.
+- Fix `noalt_calling` to correctly avoid parallelizing on non-standard
+  chromosomes without a variant regions file.
+- Fix broken `kraken` command. Thanks to @choosehappy.
+
+## 1.0.8 (5 February 2018)
+
+- GATK4 is the new default GATK release used in bcbio when running HaplotypeCaller or
+  Base Quality Score Recalibration. Use `tools_off: [gatk4]` to use older GATK
+  3.x versions.
+- GATK4: Support 4.0 release with changed command line parameters. Re-enable
+  multicore calling for CWL runs.
+- GATK4: remove older GATK3 based gatk-framework in favor of equivalent GATK4
+  commands.
+- install: move to using recent IPython parallel to avoid dependency issues
+- install: fix resolution issues due to conda 4.4.x (old ipython-cluster-helper,
+  missing libquadmath.so with numpy due to libgcc update)
+- RNA-seq variant calling: improve joint calling and parallelization with move
+  to use GATK4 HaplotypeCaller.
+- QC: improve read counting speed by moving to hts-nim-tools, replacing custom
+  samtools view counting
+- Add `noalt_calling` to avoid variant calling on non standard chromosomes.
+  Thanks to Vlad Saveliev and Oliver Hofmann.
+- variant alignment: improve core allocations for non-split alignments to avoid
+  memory issues on 4Gb/core machines with whole genome samples.
+- Add Total number of reads and adapter found to metrics in small RNA-seq pipeline.
+- Add mirtop to the tools used in small RNA-seq pipeline for miRNA annotation.
+- delly: Support 0.7.8 release which calls all variant types together.
+- gVCF: fix basic filtering for GATK and sentieon when running without joint
+  calling. Thanks to Tom Morris.
+
+## 1.0.7 (6 January 2018)
+
+- Automatically include bcbio anaconda PATH when running tools. Also allow
+  custom BCBIOPATH specification to help with modules integration. Thanks to
+  Gabriel Berriz.
+- vcfanno: only correct VCF headers to use Number=1 when decomposition takes
+  place. Avoids incorrect headers for non-decomposed inputs.
+- ensemble: normalize and decompose variants prior to incorporating into
+  ensemble calls, handling MNPs called differently across callers. Thanks to
+  Vlad Saveliev.
+- Avoid bgzipping and grabix indexing fastq inputs when not doing alignment
+  splitting to save processing.
+- Initial support for minimap2 aligner in variant calling workflows. Still needs
+  validation and benchmarking in comparison to bwa.
+- Standardize dbSNP annotation to use vcfanno for all variant callers. Remove
+  GATK custom annotations for non-GATK callers, which are not present in GATK4.
+- CNVkit: drop low coverage contaminating regions in tumor calls. Thanks to
+  Eric Talevich.
+- Expand `remove_extracontigs` for `bam_clean` to more consistently handle
+  compatible pre-aligned BAMs with different extra contigs in reference genome.
+- Fix problem collapsing samples for QC when using RNA-seq variant calling with
+  gatk-haplotype. Thanks to Neill Gibson.
+- Integrate ericscript RNA-seq fusion caller. Thanks to Tetiana Khotiainsteva
+  and Vang Le.
+- Remove read backed phasing (`phasing: gatk`) for GATK runs in favor of
+  HaplotypeCaller internal phasing.
+- disambiguation: ensure BAM index present for non-split alignments
+- Use only end of reads to detect 3' adapters in small RNA-seq pipeline.
+- Fix BCBIO_JAVA_HOME to correctly pass custom Java to GATK and Picard runs.
+- ChIP-seq: add generation of greylist regions defined as regions of  high
+  depth in the input file on a per sample pair basis.
+- RNA-seq: STAR now outputs a MAPQ of 60 for uniquely mapped reads instead of
+  255.
+- RNA-seq: Ensure BAM files fed into Cufflinks have 255 as the uniquely mapped
+  MAPQ instead of 60 as output by hisat2/STAR/etc.
+- RNA-seq: omit duplicate files from stringtie assembly merging. Thanks to
+  @mmoisse for the bug report.
+- Add support for peddy (https://github.com/brentp/peddy) for PED file
+  correspondence/ancestry checking.
+- ChIP-seq: pass through encode filtered BAMs to upload directory.
+- seq2c: pass through mapping_reads.txt file to directory.
+
+## 1.0.6 (5 November 2017)
+
+- Use mosdepth for callability calculations, replacing goleft depth. Centralize
+  coverage and QC depth calculations around single mosdepth runs.
+- Improve representation of germline and somatic calls in MultiQC report and
+  output directory, avoiding confusing "-germline" extension. Thanks
+  to Vlad Saveliev.
+- Structural variants: return combined tumor/normal calls instead of single
+  sample tumor for somatic calls in delly, lumpy, manta, and WHAM.
+- VarDict: remove `-v 50` as required option for deep targeted panels (>5000x
+  average coverage). Recommend adding if needed by a `var2vcf` resource options.
+- Templating: avoid automatically setting flowcell date to maintain consistency
+  between runs.
+- Add `fusion_caller` as an optional algorithm field to turn on/off fusion
+  callers. Currently supports oncofuse and pizzly.
+- RNA-seq: better appropriate kmer size estimation for reads < 60 bp for
+  Salmon/Rapmap/Sailfish index creation.
+- RNA-seq variant calling: require gatk-haplotype instead of gatk as the caller.
+- RNA-seq variant calling: support GATK4
+- UMIs: move fgbio consensus calling to use filtering, adds `--max-reads` for
+  high depth regions and swaps `--min-consensus-base-quality` for `--min-base-quality`
+- Correctly re-bgzip fastq inputs even if not using `align_split_size`.
+- Fix bug when running with `lumpy_usecnv` that resulted in skipping CNVkit.
+- GATK gVCF joint calling: avoid running through bcftools for header fixes,
+  using Picard instead. Avoids integer/double conversion incompatibilities.
+- CWL: run variantcalling with multiple cores, reducing total jobs and enabling
+  mulicore supporting callers.
+- CWL: support structural variant calling as part of variant pipelines.
+- Add pizzly (http://www.biorxiv.org/content/early/2017/07/20/166322)
+  as a fusion caller when fusion mode is enabled.
+- VEP: output an effect call per allele for multiallelic positions.
+- Define separators for paired fastq files during bcbio_prepare_samples.py
+- RNA-seq single-cell/DGE: add `transcriptome_gtf` as an option which will
+  collapse single-cell/DGE counts down to the gene level. This is recommended
+  for single-cell and DGE experiments.
+- ChIP-seq: preliminary support for bwa for ChIP-seq alignment. Compared to bowtie2
+  on a test dataset this results in a superset of the bowtie2 peaks, with 95% of the
+  common peaks within 50 bases of each other. It calls about 50% more peaks
+  though using the bwa alignments, use with care.
+
+## 1.0.5 (11 Sept 2017)
+
+- Add optional downsampling whole genome BAM files to a high maximum coverage
+  (200 times the average coverage) to avoid slow runtimes in collapsed repeats
+  and poly-ATGC regions. Downsampling happens in parallel with post alignment
+  sorting. Currently turned off by default pending runtime improvements.
+  Configure using `maxcov_downsample`.
+- Separate post alignment recalibration and realignment. Recalibration now
+  occurs multicore to support GATK4 implementation. We generally recommend
+  skipping realignment.
+- Provide multicore read trimming and streaming bgzip fastq output with atropos,
+  replacing cutadapt as the default trimmer.
+- hg38 runs do not run bwakit's bwa-postproc.js cleanup scripts unless HLA
+  calling needed. Avoids slowdowns using this postprocessing script when running
+  bwa with multiple cores.
+- Tumor-only prioritization uses vcfanno output instead of GEMINI,
+  allowing use without needing to build a full GEMINI database.
+- Use samtools multicore indexing, replacing sambamba multicore index.
+- Replace components of pipeline using single core sambamba view -c with
+  parallel samtools equivalents.
+- Replace sambamba depth coverage calculations with mosdepth to improve
+  speed and parallelization.
+- Multicore base quality score recalibration with GATK4 and Sentieon.
+- GATK4: add support for gVCF based joint calling.
+- GATK4: fix option usage for gVCF creation with HaplotypeCaller
+- Allow overriding Java used in bcbio with `BCBIO_JAVA_HOME`
+- Do not split individual sample VCFs during pooled batch calling. This
+  previously happened only for small batches with less than 5 samples, now we
+  avoid it entirely and let users do downstream sample extraction.
+- Update OptiType HLA calling to use multicore CBC solver, also avoiding GLPK issues.
+- Additional approach to retrieving cluster IP addresses for IPython and
+  logging, using the fully qualified domain name.
+- Add `archive: [cram-lossless]` to do CRAM archiving of outputs without quality
+  score compression. Thanks to Alison Meynert.
+- Add `tools_off: [lumpy-genotype]` option to skip Lumpy genotyping.
+- CWL/WDL: use single file tarballs for complex collections of files like
+  aligner, RTG and snpEff indices.
+- GC bias correction is now the default for Salmon read-based quantification.
+  See https://github.com/salmonteam/SalmonBlogResponse/blob/master/SalmonBlogResponse.md  for the reasoning behind this change.
+- Add kallisto support for non single-cell RNA-seq experiments.
+- Salmon can now be run alongside other RNA-seq quantifiers.
+- Cufflinks and Stringtie can be run alongside each other as RNA-seq
+  quantifiers.
+- Check BED input files for coordinates off the ends of contigs.
+
+## 1.0.4 (9 July 2017)
+
+- Initial support for GATK4 variant calling with HaplotypeCaller and MuTect2.
+  Requires `tools_on: [gatk4]` https://github.com/bcbio/bcbio_validations/tree/master/gatk4
+- Enable adapter trimming for variant calling pipeline.
+- Provide `trim_ends` command to quickly do defined end trimming as part of
+  variant calling fastq preparation.
+- Support duplex UMIs, present as embedded barcodes on read 1 and read 2.
+- Sort region based analyses like variant calling by interval size. Ensures
+  longest intervals run first avoiding delay at end of sample processing.
+- Ensure FreeBayes dbSNP and GATK annotations passed into final file. Thanks
+  to @semal.
+- Use new Ensembl vep (variant effect predictor) with updated annotations.
+  Thanks to Matthias De Smet.
+- Accept files from HTTP/FTP as input
+- CWL: use json input files for passing inputs instead of flattened command
+  line arguments. Improves compatibility with multiple runners.
+- Allow subsetting a pre-aligned BAM to only standard chromosomes, removing non
+  chr1-22,X,Y for human. This allows runs of pre-aligned data with different
+  extra chromosomes than the bcbio reference builds. Thanks to Oliver Hofmann.
+- Improved support for pre-aligned BAMs by using contigs in BAM file for
+  coverage calculations.
+- Avoid grabix race conditions with multiple identical input files. Thanks to
+  Andrey Tovchigrechko.
+- Remove usage of lxml for qsignature and qualimap to avoid icu library errors.
+- CNVkit: merge adjacent calls with identical copy numbers
+- Add support for triple-barcoded cellular barcodes.
+- Add support for Illumina's SureCell single-cell RNA-seq.
+
+## 1.0.3 (7 May 2017)
+
+- Allow installs to pull a specific git hash or tag revision of bcbio codebase.
+- Fix FreeBayes somatic and multi-sample calling order to be consistent between
+  chromosome region runs. Thanks to Ho Danliang.
+- Fix structural variant output upload for complex batching cases. Correctly
+  handle shared normals and other multi-batch by naming outputs using batches.
+  Thanks to Sven-Eric Schelhorn.
+- Move to samtools/bcftools/htslib 1.4. Provides parallel bgzip, removing need
+  for pbgzip and improved concatenation speed for region split VCF files.
+- Improve Lumpy prioritization speeds by adjusting location of breakend
+  genotyping.
+- UMI consensus: reduce runtimes to ~2/3 of previous avoiding unnecessary
+  compression and file IO.
+- UMI consensus: pass along metrics about consensus read generation as BAM tags
+  in final file (cD = depth, cE = error rate)
+- Support DNApi for de novo adapter detection in small RNA pipeline
+- Several updates to the VarScan support: honor options specified in the
+  resource config section; honor min_allele_frac option and set --strand-filter
+  flag in the single-sample case; general cleanups. Thanks to Christian Brueffer.
+- Update validation plots to support matplotlib 2.0.
+- Enable mixed list/string inputs to germline calling. Thanks to Luca Beltrame.
+- Fix qsignature outfile parsing. Thanks to Oliver Hofmann.
+- Allow structural variant validations with VCF truth sets. Enables more
+  flexible comparisons without size and event binning.
+- Provide seq2c VCF output and enable validation of calls.
+- Allow specification of seq2c options through resources. Thanks to Sally Luke
+  and Marisa Cunha.
+- Avoid using R_LIBS settings for R runs to limit incompatibilities with
+  externally installed R packages.
+- Provide absolute paths for relative paths to files in algorithm list inputs.
+  Thanks to Matthias De Smet.
+- Switch to Salmon from Sailfish as default alignment-free RNA-seq
+  quantification algorithm.
+- Add `sailfish` as a valid option for `expression_caller`.
+- Fix chimeric alignment output option for STAR.
+- Remove deprecated tidy counts for Sailfish/Salmon.
+- Allow more possible empty/skip inputs in `variantcaller` and `svcaller`: None,
+  null and empty lists
+- Move DEXSeq to be an opt-in expression caller by default.
+- Speed up combination of counts/RPKM/FPKM/TPM of samples into a single table by
+  10x.
+
+## 1.0.2 (7 March 2017)
+
+- Fix FreeBayes paired somatic calling by generalizing support for finding
+  non-ordered tumor/normal placement in VCF.
+- Re-add checks for pre-bgzipped fastq inputs to alignment preparation thanks to
+  a fix for grabix to handle Illumina bgzip outputs.
+- Provide DNA damage annotation for low frequency sequencing errors in somatic
+  samples. Use `tools_on: [damage_filter]`
+- Add viral detection for variant calling DNA-seq cancer samples. Uses
+  virus sequences from TCGA GDC distribution and provides simple counts of
+  unmapped reads against viral sequences in MultiQC report.
+- Improve lumpy structural variant runs from pre-aligned BAM files, using
+  extract_sv_reads to avoid need to resort input files. Thanks to Neill Gibson.
+- Move VCF files from SV prioritization to final upload directory. Thanks to
+  Miika Ahdesmaki.
+- Provide whole genome coverage plots with goleft indexcov. Thanks to Brent Pedersen.
+- Speed up post-alignment callability calculations by using default parameters
+  to goleft depth. Thanks to Brent Pedersen.
+- Allow custom vcfanno configuration files for variant annotation and
+  GEMINI database creation, using `vcfanno` configuration parameter. Optionally
+  allows use of `vcfanno` without GEMINI database creation.
+- Always use specified cores for analysis re-runs in local multicore mode.
+  Avoids confusing core behavior with checkpoints on re-starts of analysis in
+  a previous work directory.
+- Upload of pipeline results to iRODS. Thanks to Matthias De Smet.
+- Add duplicate removal to post-FreeBayes processing. Thanks to Neill Gibson.
+- Support latest svtyper (0.1.1) for lumpy to provide speed improvements. Will
+  default to 0.1.1 at next release.
+  (use `bcbio_conda install -c bioconda svtyper=0.1.1` to test in development)
+- Work towards supporting a Python 3 compatible bcbio codebase. Thanks to
+  Michael Crusoe.
+- Reduce VarDict maximum BED region sizes for better memory usage. Thanks to
+  Nikolai Karulin, Oliver Hofmann, Miika Ahdesmaki and Zhongwu Lai.
+- Require `tools_on: [lumpy_usecnv]` to pre-run CNVkit as input to Lumpy, allowing
+  Lumpy and CNVkit to run in parallel otherwise.
+- Avoid issues with CNVkit bin size estimates for normal associated with
+  multiple tumors. Thanks to Ho Danliang.
+- Fix double uploading of fast RNA-seq quantification.
+- Output single-cell RNA-seq counts in annotated MatrixMarket format.
+
+## 1.0.1 (17 January 2017)
+
+- Fix bug in 1.0.0 release with parallel calculations on whole genome samples.
+  The release version only parallelizes by chromosome instead of callable
+  regions, resulting in less parallelism. Thanks to Sven-Eric Schelhorn and
+  Neill Gibson.
+- Generalize use of working directories to support runs on S3 mounted
+  filesystems. Ensures all work takes place inside transactional directories.
+  Thanks to Tetiana Khotiainsteva and Sven-Eric Schelhorn.
+- Provide separate germline calling for somatic tumor/normal pairs. Supplements
+  somatic calls with standard germline calls on normal samples, including
+  ensemble and SV calling.
+- Support creating GEMINI databases with new generic mechanism using vcfanno/vcf2db.
+  This allows creation of GEMINI output for any organism. Adds support for hg38
+  with annotations from dbSNP, Clinvar, ExAC and ESP.
+- Support FreeBayes 1.1.0 for improved memory usage and 3-4x speedup.
+  Will default to 1.1.0 at next release. Validation work:
+  https://github.com/bcbio/bcbio.github.io/blob/master/_posts/2016-11-21-giab-hg38-freebayes.md
+- Rework quality control for speed and output directory consistency. Avoid
+  re-duplicating calculations and put all output in qc directory to make re-runs
+  easier. Thanks to Vlad Saveliev.
+- Fixes for Seq2C concurrency problems when preparing BED files. Thanks to Vlad
+  Saveliev.
+- Update WHAM structural variant caller to support the latest release.
+- Update delly structural variant caller to support the latest release.
+- Improve dbSNP annotation speeds for adding rs IDs to VarDict output.
+  Thanks to Ben Liesfeld.
+- Support for VEP 87 with additional plugins and generalization of fields.
+  Thanks to Matthias De Smet.
+- Deprecate `clinical_reporting` parameter and introduce new
+  `effects_transcripts` parameter than enables more control over variant effects
+  prediction. Enable HGVS by default for human projects and separates from
+  transcript selection.
+- For lumpy runs that use samblaster, use samtools sort instead of sambamba
+  sort. Avoids segfault issues with samblaster. Thanks to Oliver Hofmann.
+- Pre-install capture region BED files and enable short hand specification in
+  sample configuration.
+- Use vt normalize as part of GEMINI decomposition to clean up complex
+  multiallelic variants. Thanks to Sergey Naumenko.
+- Testing suite cleanup. Move to py.test and separate integration and unit
+  tests. Thanks to Tetiana Khotiainsteva.
+- Fix issue with cutadapt hanging on gzipped input. Thanks to Stephen Turner.
+- Updated cutadapt to use single-pass trimming for paired-end files, improving
+  performance and hitting the disk less.
+- Added support for cellular barcode error correction with single-cell RNA-seq
+  via the `cellular_barcode_correction` parameter. This corrects edit distances
+  up to the set value, defaults to 1.
+- Add support for sample-based demultiplexing of single-cell RNA-seq runs.
+- Move single-cell RNA-seq results to the upload directory.
+- Make positional UMI default to off for single-cell RNA-seq.
+- Add support for the Klein lab v3 version of the inDrop protocol.
+
+## 1.0.0 (20 November 2016)
 
 - Default to no calling if `variantcaller` not specified, instead of old GATK
   UnifiedGenotyper default.

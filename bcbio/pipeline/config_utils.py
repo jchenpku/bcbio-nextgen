@@ -11,6 +11,9 @@ import yaml
 
 import toolz as tz
 
+import six
+
+
 class CmdNotFound(Exception):
     pass
 
@@ -29,16 +32,16 @@ def update_w_custom(config, lane_info):
     for analysis_type in name_remaps.get(base_name, [base_name]):
         custom = config.get("custom_algorithms", {}).get(analysis_type)
         if custom:
-            for key, val in custom.iteritems():
+            for key, val in custom.items():
                 config["algorithm"][key] = val
     # apply any algorithm details specified with the lane
-    for key, val in lane_info.get("algorithm", {}).iteritems():
+    for key, val in lane_info.get("algorithm", {}).items():
         config["algorithm"][key] = val
     # apply any resource details specified with the lane
-    for prog, pkvs in lane_info.get("resources", {}).iteritems():
+    for prog, pkvs in lane_info.get("resources", {}).items():
         if prog not in config["resources"]:
             config["resources"][prog] = {}
-        for key, val in pkvs.iteritems():
+        for key, val in pkvs.items():
             config["resources"][prog][key] = val
     return config
 
@@ -75,22 +78,22 @@ def load_system_config(config_file=None, work_dir=None, allow_missing=False):
     config["bcbio_system"] = config_file
     return config, config_file
 
-def get_base_installdir():
-    return os.path.normpath(os.path.join(os.path.realpath(sys.executable), os.pardir, os.pardir, os.pardir))
+def get_base_installdir(cmd=sys.executable):
+    return os.path.normpath(os.path.join(os.path.realpath(cmd), os.pardir, os.pardir, os.pardir))
 
 def _merge_system_configs(host_config, container_config, out_file=None):
     """Create a merged system configuration from external and internal specification.
     """
     out = copy.deepcopy(container_config)
-    for k, v in host_config.iteritems():
+    for k, v in host_config.items():
         if k in set(["galaxy_config"]):
             out[k] = v
         elif k == "resources":
-            for pname, resources in v.iteritems():
+            for pname, resources in v.items():
                 if not isinstance(resources, dict) and pname not in out[k]:
                     out[k][pname] = resources
                 else:
-                    for rname, rval in resources.iteritems():
+                    for rname, rval in resources.items():
                         if (rname in set(["cores", "jvm_opts", "memory"])
                               or pname in set(["gatk", "mutect"])):
                             if pname not in out[k]:
@@ -125,17 +128,19 @@ def merge_resources(args):
         def _update_resources(config):
             config["resources"] = _merge_system_configs(config, docker_config)["resources"]
             return config
-        return _update_config(args, _update_resources)
+        return _update_config(args, _update_resources, allow_missing=True)
 
 def load_config(config_file):
     """Load YAML config file, replacing environmental variables.
     """
     with open(config_file) as in_handle:
-        config = yaml.load(in_handle)
+        config = yaml.safe_load(in_handle)
     config = _expand_paths(config)
+    if 'resources' not in config:
+        config['resources'] = {}
     # lowercase resource names, the preferred way to specify, for back-compatibility
     newr = {}
-    for k, v in config["resources"].iteritems():
+    for k, v in config["resources"].items():
         if k.lower() != k:
             newr[k.lower()] = v
     config["resources"].update(newr)
@@ -209,7 +214,7 @@ def _get_check_program_cmd(fn):
         for adir in os.environ['PATH'].split(":"):
             if is_ok(os.path.join(adir, program)):
                 return os.path.join(adir, program)
-        raise CmdNotFound(" ".join(map(repr, (fn.func_name, name, pconfig, default))))
+        raise CmdNotFound(" ".join(map(repr, (fn.__name__ if six.PY3 else fn.func_name, name, pconfig, default))))
     return wrap
 
 @_get_check_program_cmd
@@ -218,7 +223,7 @@ def _get_program_cmd(name, pconfig, config, default):
     """
     if pconfig is None:
         return name
-    elif isinstance(pconfig, basestring):
+    elif isinstance(pconfig, six.string_types):
         return pconfig
     elif "cmd" in pconfig:
         return pconfig["cmd"]
@@ -232,7 +237,7 @@ def _get_program_dir(name, config):
     """
     if config is None:
         raise ValueError("Could not find directory in config for %s" % name)
-    elif isinstance(config, basestring):
+    elif isinstance(config, six.string_types):
         return config
     elif "dir" in config:
         return expand_path(config["dir"])
@@ -300,7 +305,7 @@ def add_cores_to_config(args, cores_per_job, parallel=None):
         return config
     return _update_config(args, _update_cores)
 
-def _update_config(args, update_fn):
+def _update_config(args, update_fn, allow_missing=False):
     """Update configuration, nested in argument list, with the provided update function.
     """
     new_i = None
@@ -310,7 +315,10 @@ def _update_config(args, update_fn):
             new_i = i
             break
     if new_i is None:
-        raise ValueError("Could not find configuration in args: %s" % str(args))
+        if allow_missing:
+            return args
+        else:
+            raise ValueError("Could not find configuration in args: %s" % str(args))
 
     new_arg = args[new_i]
     if is_nested_config_arg(new_arg):
@@ -331,11 +339,11 @@ def convert_to_bytes(mem_str):
     """Convert a memory specification, potentially with M or G, into bytes.
     """
     if str(mem_str)[-1].upper().endswith("G"):
-        return int(mem_str[:-1]) * 1024 * 1024
+        return int(round(float(mem_str[:-1]) * 1024 * 1024))
     elif str(mem_str)[-1].upper().endswith("M"):
-        return int(mem_str[:-1]) * 1024
+        return int(round(float(mem_str[:-1]) * 1024))
     else:
-        return int(mem_str)
+        return int(round(float(mem_str)))
 
 def adjust_cores_to_mb_target(target_mb, mem_str, cores):
     """Scale core usage to match a Mb/core target.
@@ -350,15 +358,15 @@ def adjust_cores_to_mb_target(target_mb, mem_str, cores):
     else:
         return max(1, int(math.ceil(scale * cores)))
 
-def adjust_memory(val, magnitude, direction="increase", out_modifier=""):
+def adjust_memory(val, magnitude, direction="increase", out_modifier="", maximum=None):
     """Adjust memory based on number of cores utilized.
     """
     modifier = val[-1:]
-    amount = int(val[:-1])
+    amount = float(val[:-1])
     if direction == "decrease":
         new_amount = amount / float(magnitude)
         # dealing with a specifier like 1G, need to scale to Mb
-        if new_amount < 1:
+        if new_amount < 1 or (out_modifier.upper().startswith("M") and modifier.upper().startswith("G")):
             if modifier.upper().startswith("G"):
                 new_amount = (amount * 1024) / magnitude
                 modifier = "M" + modifier[1:]
@@ -377,7 +385,15 @@ def adjust_memory(val, magnitude, direction="increase", out_modifier=""):
     if out_modifier.upper().startswith("M") and modifier.upper().startswith("G"):
         modifier = out_modifier
         modifier = int(amount * 1024)
-    return "{amount}{modifier}".format(amount=amount, modifier=modifier)
+    if maximum:
+        max_modifier = maximum[-1]
+        max_amount = float(maximum[:-1])
+        if modifier.upper() == "G" and max_modifier.upper() == "M":
+            max_amount = max_amount / 1024.0
+        elif modifier.upper() == "M" and max_modifier.upper() == "G":
+            max_amount = max_amount * 1024.0
+        amount = min([amount, max_amount])
+    return "{amount}{modifier}".format(amount=int(math.floor(amount)), modifier=modifier)
 
 def adjust_opts(in_opts, config):
     """Establish JVM opts, adjusting memory for the context if needed.
@@ -393,34 +409,40 @@ def adjust_opts(in_opts, config):
             opt = "{arg}{val}".format(arg=arg,
                                       val=adjust_memory(opt[4:],
                                                         memory_adjust.get("magnitude", 1),
-                                                        memory_adjust.get("direction")))
+                                                        memory_adjust.get("direction"),
+                                                        maximum=memory_adjust.get("maximum")))
         out_opts.append(opt)
     return out_opts
 
 # specific program usage
 
-def use_vqsr(algs):
+def use_vqsr(algs, call_file=None):
     """Processing uses GATK's Variant Quality Score Recalibration.
     """
+    from bcbio.variation import vcfutils
     vqsr_callers = set(["gatk", "gatk-haplotype"])
     vqsr_sample_thresh = 50
     vqsr_supported = collections.defaultdict(int)
     coverage_intervals = set([])
     for alg in algs:
         callers = alg.get("variantcaller")
-        if isinstance(callers, basestring):
+        if isinstance(callers, six.string_types):
             callers = [callers]
         if not callers:  # no variant calling, no VQSR
             continue
-        if "vqsr" in alg.get("tools_off", []):  # VQSR turned off
+        if "vqsr" in (alg.get("tools_off") or []):  # VQSR turned off
             continue
         for c in callers:
             if c in vqsr_callers:
-                vqsr_supported[c] += 1
-                if "vqsr" in alg.get("tools_on", []):  # VQSR turned on:
+                if "vqsr" in (alg.get("tools_on") or []):  # VQSR turned on:
+                    vqsr_supported[c] += 1
                     coverage_intervals.add("genome")
+                # Do not try VQSR for gVCF inputs
+                elif call_file and vcfutils.is_gvcf_file(call_file):
+                    pass
                 else:
                     coverage_intervals.add(alg.get("coverage_interval", "exome").lower())
+                    vqsr_supported[c] += 1
     if len(vqsr_supported) > 0:
         num_samples = max(vqsr_supported.values())
         if "genome" in coverage_intervals or num_samples >= vqsr_sample_thresh:
